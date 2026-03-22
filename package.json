@@ -3,10 +3,10 @@
   "version": "3.0.0",
   "description": "Backend render server for Bot Ghost — searches r/honk and returns PNG level cards",
   "type": "module",
-  "main": "src/server.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
