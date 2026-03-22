@@ -1,180 +1,192 @@
 import express from "express";
+import axios from "axios";
 import { Resvg } from "@resvg/resvg-js";
-import { searchLevels, getSinglePost } from "./reddit.js";
-import { renderLevelCard } from "./renderer.js";
 
 const app = express();
 const PORT = process.env.PORT || 3847;
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ─── SVG → PNG helper ─────────────────────────────────────────────────────────
-/**
- * Convert an SVG string to a PNG Buffer using resvg-js.
- * Renders at 2x scale (1600px wide) for crisp Discord embeds.
- */
-function svgToPng(svg) {
-  const resvg = new Resvg(svg, {
-    fitTo: { mode: "width", value: 1600 }, // 2x the 800px card width
-    font: { loadSystemFonts: false },       // faster — we use web-safe fonts
-  });
-  return resvg.render().asPng(); // returns a Buffer
-}
-
-// ─── Base URL helper ──────────────────────────────────────────────────────────
-function getBaseUrl(req) {
-  return process.env.BASE_URL ?? `${req.protocol}://${req.get("host")}`;
-}
-
-// ─── BotGhost payload builder ─────────────────────────────────────────────────
-/**
- * Flatten results into BotGhost dot-notation keys.
- * card_url points to /card/:id/png so Discord can display it natively.
- *
- * BotGhost variable names (after naming the block "honk"):
- *   {honk.total}          total results found
- *   {honk.found}          true / false
- *   {honk.r0_title}       title of result 0
- *   {honk.r0_author}      reddit username
- *   {honk.r0_score}       upvote score
- *   {honk.r0_comments}    comment count
- *   {honk.r0_upvote_pct}  e.g. 97
- *   {honk.r0_flair}       post flair or "none"
- *   {honk.r0_url}         full reddit post URL
- *   {honk.r0_card_url}    PNG card image URL for Discord embed image
- *   {honk.r0_preview}     first 200 chars of post body
- */
-function buildBotGhostPayload(query, levels, baseUrl) {
-  const payload = {
-    query,
-    total: levels.length,
-    found: levels.length > 0,
-    summary: levels.length > 0
-      ? `Found ${levels.length} level(s) matching "${query}" in r/honk`
-      : `No levels found for "${query}" in r/honk`,
-  };
-
-  levels.forEach((level, i) => {
-    const pfx = `r${i}_`;
-    payload[`${pfx}title`]      = level.title;
-    payload[`${pfx}author`]     = level.author;
-    payload[`${pfx}score`]      = level.score;
-    payload[`${pfx}comments`]   = level.num_comments;
-    payload[`${pfx}url`]        = level.url;
-    payload[`${pfx}flair`]      = level.flair ?? "none";
-    payload[`${pfx}time`]       = level.created_at;
-    payload[`${pfx}upvote_pct`] = Math.round((level.upvote_ratio ?? 0) * 100);
-    payload[`${pfx}preview`]    = level.selftext_preview ?? "";
-    payload[`${pfx}id`]         = level.id;
-    payload[`${pfx}index`]      = i + 1;
-    // PNG card URL — Discord displays this directly in embeds
-    payload[`${pfx}card_url`]   = `${baseUrl}/card/${level.id}/png`;
-  });
-
-  return payload;
-}
-
-// ─── Health check ─────────────────────────────────────────────────────────────
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "honk-render-server", version: "3.0.0" });
+// ─── Reddit ───────────────────────────────────────────────────────────────────
+const redditClient = axios.create({
+  baseURL: "https://www.reddit.com",
+  headers: { "User-Agent": "Mozilla/5.0 (compatible; HonkBot/1.0)" },
+  timeout: 10_000,
 });
 
-// ─── POST /level_search  (+ GET alias for browser testing) ───────────────────
-async function handleLevelSearch(req, res) {
+function normalisePost(post) {
+  let imageUrl = null;
+  if (post.thumbnail && !["self","default","nsfw",""].includes(post.thumbnail)) imageUrl = post.thumbnail;
+  if (post.preview?.images?.[0]?.source?.url) imageUrl = post.preview.images[0].source.url.replace(/&amp;/g, "&");
+  return {
+    id: post.id,
+    title: post.title,
+    author: post.author,
+    score: post.score,
+    upvote_ratio: post.upvote_ratio,
+    num_comments: post.num_comments,
+    created_at: new Date(post.created_utc * 1000).toISOString(),
+    url: `https://reddit.com${post.permalink}`,
+    flair: post.link_flair_text ?? null,
+    selftext_preview: post.selftext?.slice(0, 200) ?? null,
+    image_url: imageUrl,
+    subreddit: post.subreddit,
+  };
+}
+
+async function searchLevels(query, limit = 15) {
+  const res = await redditClient.get("/r/honk/search.json", {
+    params: { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 25, t: "all" },
+  });
+  return (res.data?.data?.children ?? [])
+    .map(c => c.data)
+    .filter(p => !p.removed_by_category)
+    .slice(0, limit)
+    .map(normalisePost);
+}
+
+async function getSinglePost(postId) {
+  const id = postId.replace(/^t3_/, "");
+  const res = await redditClient.get(`/r/honk/comments/${id}.json`, { params: { limit: 1 } });
+  const post = res.data?.[0]?.data?.children?.[0]?.data;
+  if (!post) throw new Error(`Post ${postId} not found`);
+  return normalisePost(post);
+}
+
+// ─── SVG Card Renderer ────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function trunc(str, n) { return str?.length > n ? str.slice(0, n-1) + "…" : (str ?? ""); }
+function fmtNum(n) { return n >= 1000 ? (n/1000).toFixed(1)+"k" : String(n); }
+function relTime(iso) {
+  const d = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(d/60000), h = Math.floor(d/3600000), dy = Math.floor(d/86400000);
+  if (m < 60) return `${m}m ago`;
+  if (h < 24) return `${h}h ago`;
+  if (dy < 30) return `${dy}d ago`;
+  return `${Math.floor(dy/30)}mo ago`;
+}
+
+function renderCard(level, index, total) {
+  const W = 800, H = 200, PAD = 20;
+  const ORANGE = "#f97316", NAVY = "#0f172a", BG2 = "#1e293b";
+  const BORDER = "#334155", TEXT = "#f1f5f9", MUTED = "#94a3b8", GOLD = "#fbbf24";
+
+  const title    = esc(trunc(level.title, 72));
+  const author   = esc(level.author);
+  const score    = fmtNum(level.score);
+  const comments = fmtNum(level.num_comments);
+  const time     = relTime(level.created_at);
+  const ratio    = Math.round((level.upvote_ratio ?? 0) * 100);
+  const barW     = Math.round((W - PAD*2 - 204) * (level.upvote_ratio ?? 0));
+  const barColor = ratio >= 95 ? ORANGE : ratio >= 80 ? GOLD : "#86efac";
+  const flair    = level.flair ? esc(trunc(level.flair, 28)) : null;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="'Courier New',monospace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="${NAVY}"/>
+      <stop offset="100%" stop-color="#1a2540"/>
+    </linearGradient>
+  </defs>
+  <rect width="${W}" height="${H}" rx="6" fill="url(#bg)"/>
+  <rect x="0" y="0" width="4" height="${H}" fill="${ORANGE}"/>
+  <rect x="4" y="0" width="${W-4}" height="2" fill="${ORANGE}" opacity="0.5"/>
+  <rect x="${PAD+4}" y="${PAD+4}" width="36" height="22" rx="4" fill="${ORANGE}" opacity="0.15"/>
+  <rect x="${PAD+4}" y="${PAD+4}" width="36" height="22" rx="4" stroke="${ORANGE}" stroke-width="1" fill="none"/>
+  <text x="${PAD+22}" y="${PAD+19}" fill="${ORANGE}" font-size="11" font-weight="bold" text-anchor="middle">${index}/${total}</text>
+  <text x="${PAD+50}" y="${PAD+22}" fill="${TEXT}" font-size="15" font-weight="bold">${title}</text>
+  <text x="${PAD+50}" y="${PAD+44}" fill="${MUTED}" font-size="11">
+    <tspan fill="${GOLD}" font-weight="bold">u/${author}</tspan>
+    <tspan>  ·  r/honk  ·  ${time}</tspan>
+  </text>
+  ${flair ? `<rect x="${PAD+50}" y="${PAD+52}" width="${flair.length*7+16}" height="16" rx="8" fill="${ORANGE}" opacity="0.18"/>
+  <rect x="${PAD+50}" y="${PAD+52}" width="${flair.length*7+16}" height="16" rx="8" stroke="${ORANGE}" stroke-width="0.75" fill="none"/>
+  <text x="${PAD+58+flair.length*3.5}" y="${PAD+63}" fill="${ORANGE}" font-size="9.5" text-anchor="middle" font-weight="bold">${flair}</text>` : ""}
+  <line x1="${PAD+4}" y1="${H-62}" x2="${W-PAD-4}" y2="${H-62}" stroke="${BORDER}" stroke-width="1"/>
+  <text x="${PAD+4}" y="${H-42}" fill="${MUTED}" font-size="10">SCORE</text>
+  <text x="${PAD+4}" y="${H-26}" fill="${ORANGE}" font-size="15" font-weight="bold">${score}</text>
+  <text x="${PAD+80}" y="${H-42}" fill="${MUTED}" font-size="10">COMMENTS</text>
+  <text x="${PAD+80}" y="${H-26}" fill="${TEXT}" font-size="15" font-weight="bold">${comments}</text>
+  <text x="${PAD+200}" y="${H-42}" fill="${MUTED}" font-size="10">UPVOTE RATIO</text>
+  <text x="${PAD+200}" y="${H-26}" fill="${barColor}" font-size="15" font-weight="bold">${ratio}%</text>
+  <rect x="${PAD+200}" y="${H-18}" width="${W-PAD*2-204}" height="5" rx="2.5" fill="${BORDER}"/>
+  <rect x="${PAD+200}" y="${H-18}" width="${Math.max(barW, 4)}" height="5" rx="2.5" fill="${barColor}" opacity="0.85"/>
+  <text x="${W-PAD-4}" y="${H-13}" fill="${ORANGE}" font-size="9.5" text-anchor="end" opacity="0.8">${esc(trunc(level.url, 55))}</text>
+</svg>`;
+}
+
+// ─── PNG conversion ───────────────────────────────────────────────────────────
+function svgToPng(svg) {
+  return new Resvg(svg, { fitTo: { mode: "width", value: 1600 }, font: { loadSystemFonts: false } })
+    .render().asPng();
+}
+
+// ─── Routes ───────────────────────────────────────────────────────────────────
+app.get("/health", (_req, res) => res.json({ status: "ok" }));
+
+async function handleSearch(req, res) {
   const query   = (req.body?.query ?? req.query?.q ?? req.query?.query ?? "").trim();
   const limit   = Math.min(parseInt(req.body?.limit ?? req.query?.limit) || 15, 15);
-  const baseUrl = getBaseUrl(req);
+  const baseUrl = process.env.BASE_URL ?? `${req.protocol}://${req.get("host")}`;
 
-  if (!query) {
-    return res.status(400).json({
-      found: false, total: 0,
-      error: "Missing required field: query (POST body) or ?q= (GET param)",
-    });
-  }
+  if (!query) return res.status(400).json({ found: false, error: "Missing query" });
 
   try {
-    const levels  = await searchLevels(query, limit);
-    const payload = buildBotGhostPayload(query, levels, baseUrl);
-    console.log(`[level_search] "${query}" -> ${levels.length} results`);
+    const levels = await searchLevels(query, limit);
+    const payload = {
+      query, total: levels.length, found: levels.length > 0,
+      summary: levels.length > 0
+        ? `Found ${levels.length} result(s) for "${query}" in r/honk`
+        : `No levels found for "${query}" in r/honk`,
+    };
+    levels.forEach((level, i) => {
+      const p = `r${i}_`;
+      payload[`${p}title`]      = level.title;
+      payload[`${p}author`]     = level.author;
+      payload[`${p}score`]      = level.score;
+      payload[`${p}comments`]   = level.num_comments;
+      payload[`${p}url`]        = level.url;
+      payload[`${p}flair`]      = level.flair ?? "none";
+      payload[`${p}time`]       = level.created_at;
+      payload[`${p}upvote_pct`] = Math.round((level.upvote_ratio ?? 0) * 100);
+      payload[`${p}preview`]    = level.selftext_preview ?? "";
+      payload[`${p}id`]         = level.id;
+      payload[`${p}index`]      = i + 1;
+      payload[`${p}card_url`]   = `${baseUrl}/card/${level.id}/png`;
+    });
     return res.json(payload);
   } catch (err) {
-    console.error("[level_search] Error:", err.message);
-    return res.status(500).json({ found: false, total: 0, error: err.message });
+    console.error(err.message);
+    return res.status(500).json({ found: false, error: err.message });
   }
 }
 
-app.post("/level_search", handleLevelSearch);
-app.get("/level_search",  handleLevelSearch);
+app.post("/level_search", handleSearch);
+app.get("/level_search",  handleSearch);
 
-// ─── GET /card/:postId/png ────────────────────────────────────────────────────
-// Returns the level card as a PNG image.
-// Discord uses this URL directly as the embed image — works in all clients.
-//
-// Optional query params:
-//   ?index=3   which result number to show on the card (default 1)
-//   ?total=15  total results in this search (default 1)
 app.get("/card/:postId/png", async (req, res) => {
-  const { postId } = req.params;
-  const index = parseInt(req.query.index) || 1;
-  const total = parseInt(req.query.total) || 1;
-
   try {
-    const level = await getSinglePost(postId);
-    const svg   = renderLevelCard(level, index, total);
-    const png   = svgToPng(svg);
-
+    const level = await getSinglePost(req.params.postId);
+    const png   = svgToPng(renderCard(level, parseInt(req.query.index)||1, parseInt(req.query.total)||1));
     res.setHeader("Content-Type", "image/png");
-    res.setHeader("Cache-Control", "public, max-age=300"); // 5 min cache
-    res.setHeader("Content-Length", png.length);
+    res.setHeader("Cache-Control", "public, max-age=300");
     return res.end(png);
   } catch (err) {
-    console.error("[/card/png] Error:", err.message);
-    return res.status(404).json({ error: err.message });
+    res.status(404).json({ error: err.message });
   }
 });
 
-// ─── GET /card/:postId/svg ────────────────────────────────────────────────────
-// Raw SVG — useful for debugging card layout in a browser.
 app.get("/card/:postId/svg", async (req, res) => {
-  const { postId } = req.params;
-  const index = parseInt(req.query.index) || 1;
-  const total = parseInt(req.query.total) || 1;
-
   try {
-    const level = await getSinglePost(postId);
-    const svg   = renderLevelCard(level, index, total);
+    const level = await getSinglePost(req.params.postId);
+    const svg   = renderCard(level, parseInt(req.query.index)||1, parseInt(req.query.total)||1);
     res.setHeader("Content-Type", "image/svg+xml");
-    res.setHeader("Cache-Control", "public, max-age=300");
     return res.send(svg);
   } catch (err) {
-    console.error("[/card/svg] Error:", err.message);
-    return res.status(404).json({ error: err.message });
+    res.status(404).json({ error: err.message });
   }
 });
 
-// ─── GET /card/:postId ────────────────────────────────────────────────────────
-// JSON with full post data + svg string. For debugging.
-app.get("/card/:postId", async (req, res) => {
-  const { postId } = req.params;
-  const index = parseInt(req.query.index) || 1;
-  const total = parseInt(req.query.total) || 1;
-
-  try {
-    const level = await getSinglePost(postId);
-    const svg   = renderLevelCard(level, index, total);
-    return res.json({ ...level, svg });
-  } catch (err) {
-    console.error("[/card] Error:", err.message);
-    return res.status(404).json({ error: err.message });
-  }
-});
-
-// ─── Start ────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`honk-render-server v3 running on http://localhost:${PORT}`);
-  console.log(`  POST /level_search   { "query": "...", "limit": 15 }`);
-  console.log(`  GET  /card/:id/png   PNG card image (use this in Discord embeds)`);
-  console.log(`  GET  /card/:id/svg   raw SVG (browser debug)`);
-  console.log(`  GET  /health`);
-});
+app.listen(PORT, () => console.log(`honk-render-server running on port ${PORT}`));
