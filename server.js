@@ -6,26 +6,32 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Reddit's JSON API — unauthenticated, no key needed.
+// User-Agent MUST be descriptive or Reddit returns 429.
 const reddit = axios.create({
   baseURL: "https://www.reddit.com",
-  headers: { "User-Agent": "HonkBot/1.0" },
+  headers: {
+    "User-Agent": "discord:honk-level-search:v1.0 (by /u/RecognitionPatient12)",
+    "Accept": "application/json",
+  },
   timeout: 20_000,
 });
 
 async function searchLevels(query, limit = 15) {
   const res = await reddit.get("/r/honk/search.json", {
     params: {
-      q: query,
-      restrict_sr: 1,
-      sort: "relevance",  // fuzzy/similar matches not just exact
-      t: "all",
-      limit: 25,
-      raw_json: 1,
+      q:           query,
+      restrict_sr: 1,         // r/honk only
+      sort:        "relevance", // fuzzy, scores by word rarity + votes + age
+      t:           "all",      // all time
+      limit:       25,         // fetch extra, filter down below
+      raw_json:    1,          // no HTML-encoded chars in URLs
     },
   });
+
   return (res.data?.data?.children ?? [])
     .map(c => c.data)
-    .filter(p => !p.removed_by_category)
+    .filter(p => !p.removed_by_category && p.author !== "[deleted]")
     .slice(0, limit)
     .map(p => ({
       title:    p.title,
@@ -40,7 +46,9 @@ async function searchLevels(query, limit = 15) {
 }
 
 function format(query, levels) {
-  if (levels.length === 0) return `🪿 No levels found matching **${query}** in r/honk.`;
+  if (levels.length === 0) {
+    return `🪿 No levels found matching **${query}** in r/honk.`;
+  }
   return levels.map((l, i) => [
     `**${i + 1}. ${l.title}**`,
     l.flair   ? `\`${l.flair}\`` : null,
@@ -61,11 +69,12 @@ app.post("/level_search", async (req, res) => {
     const levels = await searchLevels(query, limit);
     return res.json({ response: format(query, levels) });
   } catch (err) {
-    console.error(err.message);
-    return res.json({ response: `❌ Error: ${err.message}` });
+    console.error(`[POST] error: ${err.message}`);
+    return res.json({ response: `❌ Search failed: ${err.message}` });
   }
 });
 
+// GET alias for browser testing: /level_search?q=Rollercoaster
 app.get("/level_search", async (req, res) => {
   const query = (req.query?.q ?? "").trim();
   const limit = Math.min(parseInt(req.query?.limit) || 15, 15);
@@ -74,7 +83,7 @@ app.get("/level_search", async (req, res) => {
     const levels = await searchLevels(query, limit);
     return res.json({ response: format(query, levels) });
   } catch (err) {
-    return res.json({ response: `❌ Error: ${err.message}` });
+    return res.json({ response: `❌ Search failed: ${err.message}` });
   }
 });
 
