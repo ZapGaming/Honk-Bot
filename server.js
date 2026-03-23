@@ -55,7 +55,8 @@ function getLimit(req) {
 }
 
 function getBase(req) {
-  return process.env.BASE_URL ?? `${req.protocol}://${req.get("host")}`;
+  const host = req.get("host");
+  return process.env.BASE_URL ?? `https://${host}`;
 }
 
 // ─── Reddit ───────────────────────────────────────────────────────────────────
@@ -279,64 +280,24 @@ function buildPayload(query, levels, base) {
   const results_page_url = `${base}/results?q=${encodeURIComponent(query)}`;
 
   if (levels.length === 0) {
-    return {
-      found:       false,
-      total:       0,
-      embed_title: `🪿 No results for "${query}"`,
-      embed_desc:  `Nothing found in r/honk matching **${query}**.\nTry a different search term.`,
-      embed_url:   results_page_url,
-      embed_color: "#f97316",
-      embed_footer:"r/honk level search",
-      first_card_url: "",
-      first_title:    "",
-      first_url:      "",
-      first_author:   "",
-      first_score:    0,
-      first_comments: 0,
-    };
+    return `🪿 No levels found for "${query}" in r/honk. Try a different search term.\n\n🔗 ${results_page_url}`;
   }
 
   const lines = levels.map((l, i) => {
-    const flair   = l.flair && l.flair!=="none" ? ` \`${l.flair}\`` : "";
-    const preview = l.selftext_preview
-      ? `\n> ${l.selftext_preview.replace(/\n/g," ").replace(/\[.*?\]\(.*?\)/g,"").trim().slice(0,100)}`
-      : "";
+    const flair   = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
     return [
-      `**${i+1}. [${l.title}](${l.url})**${flair}`,
+      `**${i+1}. ${l.title}**${flair}`,
       `👤 u/${l.author}  ⬆ ${fmtNum(l.score)}  💬 ${fmtNum(l.num_comments)}  🕐 ${relTime(l.created_at)}`,
-      preview,
-    ].filter(Boolean).join("\n");
+      `🔗 ${l.url}`,
+    ].join("\n");
   });
 
-  const payload = {
-    found:          true,
-    total:          levels.length,
-    embed_title:    `🪿 ${levels.length} result(s) for "${query}"`,
-    embed_desc:     lines.join("\n\n"),
-    embed_url:      results_page_url,
-    embed_color:    "#f97316",
-    embed_footer:   `${levels.length} result(s) · click title to view all`,
-    first_card_url: `${base}/card/${levels[0].id}/png`,
-    first_title:    levels[0].title,
-    first_url:      levels[0].url,
-    first_author:   levels[0].author,
-    first_score:    levels[0].score,
-    first_comments: levels[0].num_comments,
-  };
-
-  levels.forEach((l, i) => {
-    const p = `r${i}_`;
-    payload[`${p}title`]    = l.title;
-    payload[`${p}author`]   = l.author;
-    payload[`${p}score`]    = l.score;
-    payload[`${p}comments`] = l.num_comments;
-    payload[`${p}url`]      = l.url;
-    payload[`${p}flair`]    = l.flair ?? "none";
-    payload[`${p}preview`]  = l.selftext_preview ?? "";
-    payload[`${p}card_url`] = `${base}/card/${l.id}/png`;
-  });
-
-  return payload;
+  return [
+    `🪿 **${levels.length} result(s) for "${query}" in r/honk**`,
+    `📄 Full results with cards: ${results_page_url}`,
+    "",
+    lines.join("\n\n"),
+  ].join("\n");
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -383,9 +344,10 @@ async function handleSearch(req, res) {
 
   try {
     const levels  = await searchLevels(query, limit);
-    const payload = buildPayload(query, levels, base);
+    const response = buildPayload(query, levels, base);
     log("SEARCH", `Done in ${Date.now()-start}ms — returning ${levels.length} results`);
-    return res.json(payload);
+    // Return as plain text string so BotGhost {honk.response} works directly
+    return res.send(response);
   } catch (err) {
     const ms       = Date.now() - start;
     const timedOut = err.code === "ECONNABORTED" || err.message.includes("timeout");
