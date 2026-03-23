@@ -158,6 +158,16 @@ function formatPosts(header, posts, resultsUrl, limit) {
   return body.length > 1900 ? body.slice(0, 1880) + "\n…(truncated — use /results page)" : body;
 }
 
+
+
+// Strip emoji from strings used in SVG (resvg can't render them)
+function noEmoji(s) {
+  return String(s ?? "")
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
+    .replace(/[\u{2600}-\u{27BF}]/gu, "")
+    .replace(/\s+/g, " ").trim();
+}
+
 // ─── SVG card renderer ────────────────────────────────────────────────────────
 function renderCard(level, index, total) {
   const W=800,H=220,PAD=24;
@@ -165,7 +175,7 @@ function renderCard(level, index, total) {
   const ratio    = Math.round((level.upvote_ratio??0)*100);
   const barW     = Math.round((W-PAD*2-220)*(level.upvote_ratio??0));
   const barColor = ratio>=95?ORANGE:ratio>=80?GOLD:"#86efac";
-  const flair    = level.flair&&level.flair!=="none"?esc(trunc(level.flair,28)):null;
+  const flair    = level.flair&&level.flair!=="none"?esc(noEmoji(trunc(level.flair,28))):null;
   const flairW   = flair?Math.min(flair.length*8+24,200):0;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">
   <defs>
@@ -180,9 +190,9 @@ function renderCard(level, index, total) {
   <text x="${PAD+26}" y="${PAD+16}" fill="${ORANGE}" font-size="11" font-weight="bold" text-anchor="middle">${index} / ${total}</text>
   <rect x="${W-PAD-72}" y="${PAD}" width="68" height="24" rx="5" fill="#1e293b"/>
   <rect x="${W-PAD-72}" y="${PAD}" width="68" height="24" rx="5" stroke="${BORDER}" stroke-width="1" fill="none"/>
-  <text x="${W-PAD-38}" y="${PAD+16}" fill="${MUTED}" font-size="11" text-anchor="middle">r/${esc(level.subreddit??"honk")}</text>
-  <text x="${PAD+58}" y="${PAD+18}" fill="${TEXT}" font-size="16" font-weight="bold">${esc(trunc(level.title,60))}</text>
-  <text x="${PAD+58}" y="${PAD+42}" font-size="12" fill="${MUTED}"><tspan fill="${GOLD}" font-weight="bold">u/${esc(level.author)}</tspan><tspan fill="${MUTED}">  ·  ${relTime(level.created_at)}</tspan></text>
+  <text x="${W-PAD-38}" y="${PAD+16}" fill="${MUTED}" font-size="11" text-anchor="middle">r/${esc(noEmoji(level.subreddit??"honk"))}</text>
+  <text x="${PAD+58}" y="${PAD+18}" fill="${TEXT}" font-size="16" font-weight="bold">${esc(noEmoji(trunc(level.title,60)))}</text>
+  <text x="${PAD+58}" y="${PAD+42}" font-size="12" fill="${MUTED}"><tspan fill="${GOLD}" font-weight="bold">u/${esc(noEmoji(level.author))}</tspan><tspan fill="${MUTED}">  ·  ${relTime(level.created_at)}</tspan></text>
   ${flair?`<rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" fill="${ORANGE}" opacity="0.15"/>
   <rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" stroke="${ORANGE}" stroke-width="0.8" fill="none"/>
   <text x="${PAD+58+flairW/2}" y="${PAD+67}" fill="${ORANGE}" font-size="10" font-weight="bold" text-anchor="middle">${flair}</text>`:""}
@@ -650,7 +660,7 @@ function renderDevStatsCard(stats, subreddit = "honk") {
     return `
   <rect x="${PAD+8}" y="${y-16}" width="430" height="24" rx="4" fill="${BG2}" opacity="0.6"/>
   <rect x="${PAD+8}" y="${y-16}" width="${Math.max(barW,4)}" height="24" rx="4" fill="${ORANGE}" opacity="0.2"/>
-  <text x="${PAD+16}" y="${y+3}" fill="${TEXT}" font-size="12">${medals[i]} ${esc(trunc(l.title, 42))}</text>
+  <text x="${PAD+16}" y="${y+3}" fill="${TEXT}" font-size="12">${esc(noEmoji(trunc(l.title, 42)))}</text>
   <text x="${PAD+446}" y="${y+3}" fill="${GOLD}" font-size="12" font-weight="bold" text-anchor="end">⬆ ${fmtNum(l.score)}</text>`;
   }).join("");
 
@@ -661,7 +671,7 @@ function renderDevStatsCard(stats, subreddit = "honk") {
     const bH = Math.max(Math.round((d.count / maxDiffCount) * 60), 4);
     return `
   <rect x="${x}" y="${y+(60-bH)}" width="64" height="${bH}" rx="4" fill="${d.color}" opacity="0.85"/>
-  <text x="${x+32}" y="${y+76}" fill="${MUTED}" font-size="9" text-anchor="middle">${esc(d.label)}</text>
+  <text x="${x+32}" y="${y+76}" fill="${MUTED}" font-size="9" text-anchor="middle">${esc(noEmoji(d.label))}</text>
   <text x="${x+32}" y="${y+90}" fill="${TEXT}" font-size="12" font-weight="bold" text-anchor="middle">${d.count}</text>`;
   }).join("");
 
@@ -675,8 +685,8 @@ function renderDevStatsCard(stats, subreddit = "honk") {
   <rect x="6" y="0" width="${W-6}" height="3" fill="${ORANGE}" opacity="0.4"/>
 
   <text x="${PAD+8}" y="${PAD+22}" fill="${ORANGE}" font-size="11" letter-spacing="2">r/${esc(subreddit)}</text>
-  <text x="${PAD+8}" y="${PAD+56}" fill="${TEXT}" font-size="26" font-weight="bold">🪿 u/${esc(stats.username)}</text>
-  <text x="${PAD+8}" y="${PAD+78}" fill="${MUTED}" font-size="12">Active since ${esc(stats.activeSince)}  ·  Last post ${esc(stats.latestPost)}  ·  ${stats.totalLevels} levels  ·  ${esc(stats.topDifficulty)}</text>
+  <text x="${PAD+8}" y="${PAD+56}" fill="${TEXT}" font-size="26" font-weight="bold">🪿 u/${esc(noEmoji(stats.username))}</text>
+  <text x="${PAD+8}" y="${PAD+78}" fill="${MUTED}" font-size="12">Active since ${esc(stats.activeSince)}  ·  Last post ${esc(stats.latestPost)}  ·  ${stats.totalLevels} levels  ·  ${esc(noEmoji(stats.topDifficulty))}</text>
 
   <line x1="${PAD}" y1="${PAD+96}" x2="${W-PAD}" y2="${PAD+96}" stroke="${BORDER}" stroke-width="1"/>
 
@@ -697,7 +707,7 @@ function renderDevStatsCard(stats, subreddit = "honk") {
   <rect x="${W-PAD-230}" y="${PAD+8}" width="230" height="52" rx="8" fill="${BG2}"/>
   <rect x="${W-PAD-230}" y="${PAD+8}" width="3"   height="52" rx="1.5" fill="${GOLD}"/>
   <text x="${W-PAD-220}" y="${PAD+26}" fill="${MUTED}" font-size="10" letter-spacing="1">BEST LEVEL</text>
-  <text x="${W-PAD-220}" y="${PAD+44}" fill="${GOLD}" font-size="13" font-weight="bold">${esc(trunc(stats.bestLevel.title, 22))}</text>
+  <text x="${W-PAD-220}" y="${PAD+44}" fill="${GOLD}" font-size="13" font-weight="bold">${esc(noEmoji(trunc(stats.bestLevel.title, 22)))}</text>
   <text x="${W-PAD-8}"   y="${PAD+44}" fill="${ORANGE}" font-size="13" font-weight="bold" text-anchor="end">⬆ ${fmtNum(stats.bestLevel.score)}</text>
 </svg>`;
 }
