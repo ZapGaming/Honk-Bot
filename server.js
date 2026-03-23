@@ -3,7 +3,7 @@ import axios from "axios";
 import { Resvg } from "@resvg/resvg-js";
 
 const app = express();
-const PORT = process.env.PORT || 3847;
+const PORT = process.env.PORT || 10000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
