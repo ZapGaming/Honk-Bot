@@ -175,6 +175,7 @@ function svgToPng(svg) {
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
+app.get("/", (_req, res) => { log("HEALTH", "Root health check OK"); res.json({ status: "ok" }); });
 app.get("/health", (_req, res) => {
   log("HEALTH", "Health check OK");
   res.json({ status: "ok" });
