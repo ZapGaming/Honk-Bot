@@ -330,37 +330,33 @@ app.get("/results", async (req, res) => {
   }
 });
 
-// GET /search?q=...&difficulty=...&sub=...&limit=...
-// POST /search body: { query, difficulty, subreddit, limit }
-// BotGhost reads response via {honk.response}
+// GET/POST /search — BotGhost reads via {honk.response}
 async function handleSearch(req, res) {
-  const query      = getQuery(req);
-  const subreddit  = getSubreddit(req);
-  const difficulty = getDifficulty(req);
-  const limit      = getLimit(req);
-  const base       = getBase(req);
-  const start      = Date.now();
-
-  log("SEARCH", `"${query}" | sub: r/${subreddit} | difficulty: ${difficulty ?? "any"} | limit: ${limit}`);
-
-  if (!query) {
-    log("SEARCH_ERROR", "Missing query");
-    return res.status(400).send("No results found — missing query.");
-  }
-
+  res.status(200);
+  res.setHeader("Content-Type", "text/plain");
+  let query, subreddit, difficulty, limit, base;
   try {
-    let levels = await searchLevels(query, 50, subreddit);
-    levels     = filterByDifficulty(levels, difficulty).slice(0, limit);
-
+    query      = getQuery(req);
+    subreddit  = getSubreddit(req);
+    difficulty = getDifficulty(req);
+    limit      = getLimit(req);
+    base       = getBase(req);
+  } catch(e) {
+    return res.send("Error reading request params: " + e.message);
+  }
+  const start = Date.now();
+  log("SEARCH", `"${query}" | sub: r/${subreddit} | difficulty: ${difficulty ?? "any"} | limit: ${limit}`);
+  if (!query) return res.send("No results found — please provide a search query.");
+  try {
+    let levels   = await searchLevels(query, 50, subreddit);
+    levels       = filterByDifficulty(levels, difficulty).slice(0, limit);
     const diffLabel  = difficulty ? ` [${difficulty}]` : "";
     const resultsUrl = `${base}/results?q=${encodeURIComponent(query)}&sub=${encodeURIComponent(subreddit)}`;
     const header     = `${levels.length} result(s) for "${query}" in r/${subreddit}${diffLabel}`;
-
     log("SEARCH", `Done in ${Date.now()-start}ms — ${levels.length} results`);
     return res.send(formatPosts(header, levels, resultsUrl));
-
   } catch (err) {
-    const ms       = Date.now() - start;
+    const ms = Date.now() - start;
     const timedOut = err.code === "ECONNABORTED";
     const limited  = err.response?.status === 429;
     log("SEARCH_ERROR", `${timedOut?"TIMEOUT":limited?"RATE_LIMITED":"FAILED"} after ${ms}ms: ${err.message}`);
@@ -371,41 +367,42 @@ async function handleSearch(req, res) {
     );
   }
 }
-app.get("/search",  handleSearch);
-app.post("/search", handleSearch);
+app.get("/search",   handleSearch);
+app.post("/search",  handleSearch);
+app.put("/search",   handleSearch);
+app.patch("/search", handleSearch);
 
-// GET /user?u=username&difficulty=...&sub=...
-// BotGhost reads response via {user.response}
-app.get("/user", async (req, res) => {
-  const username   = (req.query.u ?? req.query.username ?? "").trim().replace(/^u\//i, "");
+// GET/POST /user — BotGhost reads via {user.response}
+async function handleUser(req, res) {
+  res.status(200);
+  res.setHeader("Content-Type", "text/plain");
+  const username   = (req.query.u ?? req.query.username ?? req.body?.u ?? req.body?.username ?? "").trim().replace(/^u\//i, "");
   const subreddit  = getSubreddit(req);
   const difficulty = getDifficulty(req);
   const base       = getBase(req);
   const start      = Date.now();
-
   log("USER", `u/${username} in r/${subreddit} | difficulty: ${difficulty ?? "any"}`);
-  if (!username) return res.status(400).send("Missing ?u= param (reddit username)");
-
+  if (!username) return res.send("Missing username — use ?u=RedditUsername");
   try {
-    let levels = await searchLevels(`author:${username}`, 50, subreddit);
-    levels     = filterByDifficulty(levels, difficulty).slice(0, 15);
-
+    let levels   = await searchLevels(`author:${username}`, 50, subreddit);
+    levels       = filterByDifficulty(levels, difficulty).slice(0, 15);
     const diffLabel  = difficulty ? ` [${difficulty}]` : "";
-    const resultsUrl = `${base}/results?q=${encodeURIComponent(`author:${username}`)}&sub=${encodeURIComponent(subreddit)}`;
+    const resultsUrl = `${base}/results?q=${encodeURIComponent("author:"+username)}&sub=${encodeURIComponent(subreddit)}`;
     const header     = `${levels.length} level(s) by u/${username} in r/${subreddit}${diffLabel}`;
-
     log("USER", `Done in ${Date.now()-start}ms — ${levels.length} results`);
     return res.send(formatPosts(header, levels, resultsUrl));
-
   } catch (err) {
     log("USER_ERROR", `FAILED: ${err.message}`);
     return res.send(`Error fetching levels: ${err.message}`);
   }
-});
+}
+app.get("/user",   handleUser);
+app.post("/user",  handleUser);
 
-// GET /top?timeframe=week&difficulty=...&sub=...
-// BotGhost reads response via {top.response}
-app.get("/top", async (req, res) => {
+// GET/POST /top — BotGhost reads via {top.response}
+async function handleTop(req, res) {
+  res.status(200);
+  res.setHeader("Content-Type", "text/plain");
   const rawTime    = (req.query.timeframe ?? req.body?.timeframe ?? "all").toLowerCase().trim();
   const subreddit  = getSubreddit(req);
   const difficulty = getDifficulty(req);
@@ -414,31 +411,28 @@ app.get("/top", async (req, res) => {
   const timeMap    = { today:"day", day:"day", week:"week", "this week":"week", month:"month", "this month":"month", year:"year", all:"all", "all time":"all" };
   const t          = timeMap[rawTime] ?? "all";
   const timeLabel  = { day:"Today", week:"This Week", month:"This Month", year:"This Year", all:"All Time" }[t];
-
   log("TOP", `r/${subreddit} | t=${t} | difficulty: ${difficulty ?? "any"}`);
-
   try {
-    const res2 = await redditClient.get(`/r/${subreddit}/top.json`, { params: { t, limit: 50 } });
-    let levels = (res2.data?.data?.children ?? [])
+    const r    = await redditClient.get(`/r/${subreddit}/top.json`, { params: { t, limit: 50 } });
+    let levels = (r.data?.data?.children ?? [])
       .map(c => c.data)
       .filter(p => !p.removed_by_category)
       .map(normalisePost);
     levels     = filterByDifficulty(levels, difficulty).slice(0, 15);
-
     const diffLabel  = difficulty ? ` [${difficulty}]` : "";
     const resultsUrl = `${base}/results?q=top&sub=${encodeURIComponent(subreddit)}`;
     const header     = `Top ${levels.length} level(s) in r/${subreddit} — ${timeLabel}${diffLabel}`;
-
     log("TOP", `Done in ${Date.now()-start}ms — ${levels.length} results`);
     return res.send(formatPosts(header, levels, resultsUrl));
-
   } catch (err) {
     log("TOP_ERROR", `FAILED: ${err.message}`);
     return res.send(`Error fetching top levels: ${err.message}`);
   }
-});
+}
+app.get("/top",   handleTop);
+app.post("/top",  handleTop);
 
-// GET /image?q=...&sub=... — first result PNG card for Discord embed image field
+// GET /image?q=...&sub=... — PNG card for Discord embed image
 app.get("/image", async (req, res) => {
   const query     = (req.query.q ?? req.query.query ?? "").trim();
   const subreddit = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
@@ -513,11 +507,11 @@ process.on("unhandledRejection", r   => log("UNHANDLED", String(r)));
 
 app.listen(PORT, () => {
   log("STARTUP", `honk-render-server running on port ${PORT}`);
-  log("STARTUP", "GET/POST /search?q=...&difficulty=...&sub=...&limit=...  → {honk.response}");
-  log("STARTUP", "GET      /user?u=...&difficulty=...&sub=...              → {user.response}");
-  log("STARTUP", "GET      /top?timeframe=...&difficulty=...&sub=...       → {top.response}");
-  log("STARTUP", "GET      /image?q=...&sub=...                            → PNG card");
-  log("STARTUP", "GET      /results?q=...&sub=...                          → HTML page");
-  log("STARTUP", "GET      /card/:id/png                                   → PNG card");
-  log("STARTUP", "GET      /card/:id/svg                                   → SVG debug");
+  log("STARTUP", "GET/POST/PUT/PATCH /search  → {honk.response}");
+  log("STARTUP", "GET/POST           /user    → {user.response}");
+  log("STARTUP", "GET/POST           /top     → {top.response}");
+  log("STARTUP", "GET                /image   → PNG card");
+  log("STARTUP", "GET                /results → HTML page");
+  log("STARTUP", "GET                /card/:id/png");
+  log("STARTUP", "GET                /card/:id/svg");
 });
