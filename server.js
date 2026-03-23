@@ -567,19 +567,15 @@ app.get("/user", async (req, res) => {
         `${i+1}. ${l.title}${flair}`,
         `Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
         l.url,
-      ].join("
-");
+      ].join("\n");
     });
 
     return res.send([
       `${posts.length} level(s) by u/${username} in r/${subreddit}${difficulty ? ` [${difficulty}]` : ""}`,
       `Full results: ${results_page_url}`,
       "---",
-      lines.join("
-
-"),
-    ].join("
-"));
+      lines.join("\n\n"),
+    ].join("\n"));
 
   } catch (err) {
     const ms = Date.now() - start;
@@ -636,19 +632,15 @@ app.get("/top", async (req, res) => {
         `Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
         `by u/${l.author}`,
         l.url,
-      ].join("
-");
+      ].join("\n");
     });
 
     return res.send([
       `Top ${posts.length} level(s) in r/${subreddit} — ${timeLabel}${difficulty ? ` [${difficulty}]` : ""}`,
       `Full results: ${results_page_url}`,
       "---",
-      lines.join("
-
-"),
-    ].join("
-"));
+      lines.join("\n\n"),
+    ].join("\n"));
 
   } catch (err) {
     const ms = Date.now() - start;
@@ -698,19 +690,15 @@ app.get("/new", async (req, res) => {
         `Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
         `by u/${l.author}`,
         l.url,
-      ].join("
-");
+      ].join("\n");
     });
 
     return res.send([
       `${posts.length} newest level(s) in r/${subreddit}${difficulty ? ` [${difficulty}]` : ""}`,
       `Full results: ${results_page_url}`,
       "---",
-      lines.join("
-
-"),
-    ].join("
-"));
+      lines.join("\n\n"),
+    ].join("\n"));
 
   } catch (err) {
     const ms = Date.now() - start;
