@@ -49,12 +49,12 @@ function nextUA() {
 }
 
 // ─── Reddit client ────────────────────────────────────────────────────────────
-const reddit = axios.create({
+const redditClient = axios.create({
   baseURL: "https://www.reddit.com",
   headers: { "Accept": "application/json" },
   timeout: 12_000,
 });
-reddit.interceptors.request.use(config => {
+redditClient.interceptors.request.use(config => {
   config.headers["User-Agent"] = nextUA();
   return config;
 });
@@ -70,7 +70,18 @@ const DIFFICULTIES = [
   "🔥💀🔥 IMPOSSIBLE",
 ];
 
-// ─── Param helpers ────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function esc(s)    { return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function trunc(s,n){ return s?.length > n ? s.slice(0,n-1) + "…" : (s ?? ""); }
+function fmtNum(n) { return n >= 1000 ? (n/1000).toFixed(1) + "k" : String(n); }
+function relTime(iso) {
+  const d=Date.now()-new Date(iso).getTime(), m=Math.floor(d/60000), h=Math.floor(d/3600000), dy=Math.floor(d/86400000);
+  if (m < 60)  return `${m}m ago`;
+  if (h < 24)  return `${h}h ago`;
+  if (dy < 30) return `${dy}d ago`;
+  return `${Math.floor(dy/30)}mo ago`;
+}
+
 function getParam(req, ...keys) {
   for (const k of keys) {
     const v = req.body?.[k] ?? req.query?.[k];
@@ -86,19 +97,14 @@ function getSubreddit(req) {
 function getDifficulty(req) {
   const raw = getParam(req, "difficulty");
   if (!raw) return null;
-  // match case-insensitively against known difficulties
   return DIFFICULTIES.find(d => d.toLowerCase() === raw.toLowerCase()) ?? null;
-}
-
-function getLimit(req) {
-  return Math.min(parseInt(getParam(req, "limit")) || 15, 15);
 }
 
 function getBase(req) {
   return process.env.BASE_URL ?? `https://${req.get("host")}`;
 }
 
-// ─── Reddit helpers ───────────────────────────────────────────────────────────
+// ─── Reddit ───────────────────────────────────────────────────────────────────
 function normalisePost(post) {
   let imageUrl = null;
   if (post.thumbnail && !["self","default","nsfw",""].includes(post.thumbnail)) imageUrl = post.thumbnail;
@@ -127,48 +133,17 @@ function filterByDifficulty(posts, difficulty) {
 async function redditGet(path, params) {
   const start = Date.now();
   try {
-    const res = await reddit.get(path, { params });
+    const res = await redditClient.get(path, { params });
     log("REDDIT", `GET ${path} → ${res.status} in ${Date.now()-start}ms`);
     return res;
   } catch (err) {
     const ms = Date.now() - start;
-    if (err.code === "ECONNABORTED")       log("REDDIT_ERROR", `TIMEOUT after ${ms}ms on ${path}`);
-    else if (err.response?.status === 429) log("REDDIT_ERROR", `RATE LIMITED on ${path}`);
-    else if (err.response)                 log("REDDIT_ERROR", `HTTP ${err.response.status} on ${path}`);
-    else                                   log("REDDIT_ERROR", `${err.message} on ${path}`);
+    if (err.code === "ECONNABORTED")       log("REDDIT_ERROR", `TIMEOUT after ${ms}ms`);
+    else if (err.response?.status === 429) log("REDDIT_ERROR", `RATE LIMITED (429)`);
+    else if (err.response)                 log("REDDIT_ERROR", `HTTP ${err.response.status} after ${ms}ms`);
+    else                                   log("REDDIT_ERROR", `${err.message}`);
     throw err;
   }
-}
-
-// ─── Formatters ───────────────────────────────────────────────────────────────
-function esc(s)    { return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
-function trunc(s,n){ return s?.length > n ? s.slice(0, n-1) + "…" : (s ?? ""); }
-function fmtNum(n) { return n >= 1000 ? (n/1000).toFixed(1) + "k" : String(n); }
-function relTime(iso) {
-  const d=Date.now()-new Date(iso).getTime(), m=Math.floor(d/60000), h=Math.floor(d/3600000), dy=Math.floor(d/86400000);
-  if (m < 60)  return `${m}m ago`;
-  if (h < 24)  return `${h}h ago`;
-  if (dy < 30) return `${dy}d ago`;
-  return `${Math.floor(dy/30)}mo ago`;
-}
-
-// Format a list of posts into JSON with a response string BotGhost accesses via {xxx.response}
-function formatResponse(header, posts, resultsUrl) {
-  let text;
-  if (posts.length === 0) {
-    text = `${header}\nNo results found.\n\n${resultsUrl}`;
-  } else {
-    const lines = posts.map((l, i) => {
-      const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
-      return [
-        `${i+1}. ${l.title}${flair}`,
-        `by u/${l.author} | Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
-        l.url,
-      ].join("\n");
-    });
-    text = [header, `Full results: ${resultsUrl}`, "---", lines.join("\n\n")].join("\n");
-  }
-  return { response: text };
 }
 
 // ─── SVG card renderer ────────────────────────────────────────────────────────
@@ -176,11 +151,10 @@ function renderCard(level, index, total) {
   const W=800, H=220, PAD=24;
   const ORANGE="#f97316", NAVY="#0f172a", BORDER="#334155", TEXT="#f1f5f9", MUTED="#94a3b8", GOLD="#fbbf24";
   const ratio    = Math.round((level.upvote_ratio ?? 0) * 100);
-  const barW     = Math.round((W - PAD*2 - 220) * (level.upvote_ratio ?? 0));
+  const barW     = Math.round((W-PAD*2-220) * (level.upvote_ratio ?? 0));
   const barColor = ratio >= 95 ? ORANGE : ratio >= 80 ? GOLD : "#86efac";
   const flair    = level.flair && level.flair !== "none" ? esc(trunc(level.flair, 28)) : null;
-  const flairW   = flair ? Math.min(flair.length * 8 + 24, 200) : 0;
-
+  const flairW   = flair ? Math.min(flair.length*8+24, 200) : 0;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${NAVY}"/><stop offset="100%" stop-color="#1a2540"/></linearGradient>
@@ -196,10 +170,7 @@ function renderCard(level, index, total) {
   <rect x="${W-PAD-72}" y="${PAD}" width="68" height="24" rx="5" stroke="${BORDER}" stroke-width="1" fill="none"/>
   <text x="${W-PAD-38}" y="${PAD+16}" fill="${MUTED}" font-size="11" text-anchor="middle">r/${esc(level.subreddit ?? "honk")}</text>
   <text x="${PAD+58}" y="${PAD+18}" fill="${TEXT}" font-size="16" font-weight="bold">${esc(trunc(level.title, 60))}</text>
-  <text x="${PAD+58}" y="${PAD+42}" font-size="12" fill="${MUTED}">
-    <tspan fill="${GOLD}" font-weight="bold">u/${esc(level.author)}</tspan>
-    <tspan fill="${MUTED}">  ·  ${relTime(level.created_at)}</tspan>
-  </text>
+  <text x="${PAD+58}" y="${PAD+42}" font-size="12" fill="${MUTED}"><tspan fill="${GOLD}" font-weight="bold">u/${esc(level.author)}</tspan><tspan fill="${MUTED}">  ·  ${relTime(level.created_at)}</tspan></text>
   ${flair ? `<rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" fill="${ORANGE}" opacity="0.15"/>
   <rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" stroke="${ORANGE}" stroke-width="0.8" fill="none"/>
   <text x="${PAD+58+flairW/2}" y="${PAD+67}" fill="${ORANGE}" font-size="10" font-weight="bold" text-anchor="middle">${flair}</text>` : ""}
@@ -287,11 +258,24 @@ footer{text-align:center;margin-top:48px;font-size:.75rem;color:#334155;letter-s
 </body></html>`;
 }
 
+// ─── Shared post formatter ────────────────────────────────────────────────────
+// Returns plain text — BotGhost reads this via {xxx.response}
+function formatPosts(header, posts, resultsUrl) {
+  if (posts.length === 0) {
+    return `${header}\nNo results found.\n${resultsUrl}`;
+  }
+  const lines = posts.map((l, i) => {
+    const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
+    return `${i+1}. ${l.title}${flair}\nby u/${l.author} | Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}\n${l.url}`;
+  });
+  return `${header}\nFull results: ${resultsUrl}\n---\n${lines.join("\n\n")}`;
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get("/",       (_req, res) => res.json({ status: "ok" }));
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
-// GET /results?q=...&sub=...
+// GET /results?q=...&sub=...  — HTML results page
 app.get("/results", async (req, res) => {
   const query     = getParam(req, "q", "query");
   const subreddit = getSubreddit(req);
@@ -299,7 +283,7 @@ app.get("/results", async (req, res) => {
   log("RESULTS_PAGE", `"${query}" in r/${subreddit}`);
   if (!query) return res.status(400).send("<h1>Missing ?q= param</h1>");
   try {
-    const r    = await redditGet(`/r/${subreddit}/search.json`, { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 25, t: "all" });
+    const r     = await redditGet(`/r/${subreddit}/search.json`, { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 25, t: "all" });
     const posts = (r.data?.data?.children ?? []).map(c => c.data).filter(p => !p.removed_by_category).slice(0, 15).map(normalisePost);
     res.setHeader("Content-Type", "text/html");
     return res.send(buildResultsPage(query, posts, base, subreddit));
@@ -308,39 +292,37 @@ app.get("/results", async (req, res) => {
   }
 });
 
-// GET /search?q=...  OR  POST /search  { "query": "..." }
-// Also accepts: difficulty, subreddit, limit
+// GET /search?q=...&difficulty=...&sub=...&limit=...
+// POST /search  body: { query, difficulty, subreddit, limit }
 async function handleSearch(req, res) {
   const query      = getParam(req, "query", "q");
   const subreddit  = getSubreddit(req);
   const difficulty = getDifficulty(req);
-  const limit      = getLimit(req);
+  const limit      = Math.min(parseInt(getParam(req, "limit")) || 15, 15);
   const base       = getBase(req);
   const start      = Date.now();
 
   log("SEARCH", `"${query}" | sub: r/${subreddit} | difficulty: ${difficulty ?? "any"} | limit: ${limit}`);
 
-  if (!query) {
-    return res.status(400).send("No results found — missing query.");
-  }
+  if (!query) return res.status(400).send("No results found — missing query.");
 
   try {
-    const r     = await redditGet(`/r/${subreddit}/search.json`, { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 50, t: "all" });
-    let posts   = (r.data?.data?.children ?? []).map(c => c.data).filter(p => !p.removed_by_category).map(normalisePost);
-    posts       = filterByDifficulty(posts, difficulty).slice(0, limit);
+    const r    = await redditGet(`/r/${subreddit}/search.json`, { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 50, t: "all" });
+    let posts  = (r.data?.data?.children ?? []).map(c => c.data).filter(p => !p.removed_by_category).map(normalisePost);
+    posts      = filterByDifficulty(posts, difficulty).slice(0, limit);
 
     const diffLabel  = difficulty ? ` [${difficulty}]` : "";
     const resultsUrl = `${base}/results?q=${encodeURIComponent(query)}&sub=${encodeURIComponent(subreddit)}`;
     const header     = `${posts.length} result(s) for "${query}" in r/${subreddit}${diffLabel}`;
 
     log("SEARCH", `Done in ${Date.now()-start}ms — ${posts.length} results`);
-    return res.json(formatResponse(header, posts, resultsUrl));
+    return res.send(formatPosts(header, posts, resultsUrl));
 
   } catch (err) {
     const timedOut = err.code === "ECONNABORTED";
     const limited  = err.response?.status === 429;
     log("SEARCH_ERROR", `${timedOut ? "TIMEOUT" : limited ? "RATE_LIMITED" : "FAILED"}: ${err.message}`);
-    return res.status(500).send(
+    return res.send(
       timedOut ? "Reddit took too long to respond. Try again in a moment." :
       limited  ? "Too many requests to Reddit. Try again in 30 seconds." :
                  `Search failed: ${err.message}`
@@ -359,24 +341,23 @@ app.get("/user", async (req, res) => {
   const start      = Date.now();
 
   log("USER", `u/${username} in r/${subreddit} | difficulty: ${difficulty ?? "any"}`);
-
   if (!username) return res.status(400).send("Missing ?u= param (reddit username)");
 
   try {
-    const r    = await redditGet(`/r/${subreddit}/search.json`, { q: `author:${username}`, restrict_sr: 1, sort: "top", type: "link", limit: 50, t: "all" });
-    let posts  = (r.data?.data?.children ?? []).map(c => c.data).filter(p => !p.removed_by_category).map(normalisePost);
-    posts      = filterByDifficulty(posts, difficulty).slice(0, 15);
+    const r   = await redditGet(`/r/${subreddit}/search.json`, { q: `author:${username}`, restrict_sr: 1, sort: "top", type: "link", limit: 50, t: "all" });
+    let posts = (r.data?.data?.children ?? []).map(c => c.data).filter(p => !p.removed_by_category).map(normalisePost);
+    posts     = filterByDifficulty(posts, difficulty).slice(0, 15);
 
     const diffLabel  = difficulty ? ` [${difficulty}]` : "";
     const resultsUrl = `${base}/results?q=${encodeURIComponent(`author:${username}`)}&sub=${encodeURIComponent(subreddit)}`;
     const header     = `${posts.length} level(s) by u/${username} in r/${subreddit}${diffLabel}`;
 
     log("USER", `Done in ${Date.now()-start}ms — ${posts.length} results`);
-    return res.json(formatResponse(header, posts, resultsUrl));
+    return res.send(formatPosts(header, posts, resultsUrl));
 
   } catch (err) {
     log("USER_ERROR", `FAILED: ${err.message}`);
-    return res.status(500).send(`Error fetching levels: ${err.message}`);
+    return res.send(`Error fetching levels: ${err.message}`);
   }
 });
 
@@ -387,7 +368,7 @@ app.get("/top", async (req, res) => {
   const difficulty = getDifficulty(req);
   const base       = getBase(req);
   const start      = Date.now();
-  const timeMap    = { today:"day", day:"day", week:"week", month:"month", year:"year", all:"all", "all time":"all", "this week":"week", "this month":"month" };
+  const timeMap    = { today:"day", day:"day", week:"week", "this week":"week", month:"month", "this month":"month", year:"year", all:"all", "all time":"all" };
   const t          = timeMap[rawTime] ?? "all";
   const timeLabel  = { day:"Today", week:"This Week", month:"This Month", year:"This Year", all:"All Time" }[t];
 
@@ -399,26 +380,26 @@ app.get("/top", async (req, res) => {
     posts     = filterByDifficulty(posts, difficulty).slice(0, 15);
 
     const diffLabel  = difficulty ? ` [${difficulty}]` : "";
-    const resultsUrl = `${base}/results?q=*&sub=${encodeURIComponent(subreddit)}`;
+    const resultsUrl = `${base}/results?q=top&sub=${encodeURIComponent(subreddit)}`;
     const header     = `Top ${posts.length} level(s) in r/${subreddit} — ${timeLabel}${diffLabel}`;
 
     log("TOP", `Done in ${Date.now()-start}ms — ${posts.length} results`);
-    return res.json(formatResponse(header, posts, resultsUrl));
+    return res.send(formatPosts(header, posts, resultsUrl));
 
   } catch (err) {
     log("TOP_ERROR", `FAILED: ${err.message}`);
-    return res.status(500).send(`Error fetching top levels: ${err.message}`);
+    return res.send(`Error fetching top levels: ${err.message}`);
   }
 });
 
-// GET /image?q=...&sub=... — first result PNG card (for Discord embed image field)
+// GET /image?q=...&sub=...  — PNG card of first result for Discord embed image
 app.get("/image", async (req, res) => {
   const query     = getParam(req, "q", "query");
   const subreddit = getSubreddit(req);
   log("IMAGE", `"${query}" in r/${subreddit}`);
   if (!query) return res.status(400).send("Missing ?q= param");
   try {
-    const r    = await redditGet(`/r/${subreddit}/search.json`, { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 5, t: "all" });
+    const r     = await redditGet(`/r/${subreddit}/search.json`, { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 5, t: "all" });
     const posts = (r.data?.data?.children ?? []).map(c => c.data).filter(p => !p.removed_by_category).map(normalisePost);
     if (posts.length === 0) {
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="220" font-family="sans-serif">
@@ -446,7 +427,7 @@ app.get("/card/:postId/png", async (req, res) => {
   const subreddit  = getSubreddit(req);
   const index      = parseInt(req.query.index) || 1;
   const total      = parseInt(req.query.total) || 1;
-  log("CARD", `PNG for ${postId} (${index}/${total}) in r/${subreddit}`);
+  log("CARD", `PNG for ${postId} (${index}/${total})`);
   try {
     const id   = postId.replace(/^t3_/, "");
     const r    = await redditGet(`/r/${subreddit}/comments/${id}.json`, { limit: 1 });
@@ -468,7 +449,7 @@ app.get("/card/:postId/svg", async (req, res) => {
   const subreddit  = getSubreddit(req);
   const index      = parseInt(req.query.index) || 1;
   const total      = parseInt(req.query.total) || 1;
-  log("CARD_SVG", `SVG for ${postId} in r/${subreddit}`);
+  log("CARD_SVG", `SVG for ${postId}`);
   try {
     const id   = postId.replace(/^t3_/, "");
     const r    = await redditGet(`/r/${subreddit}/comments/${id}.json`, { limit: 1 });
