@@ -307,25 +307,25 @@ function buildResultsPage(query, levels, base) {
 }
 
 // ─── Payload builder ──────────────────────────────────────────────────────────
-function buildPayload(query, levels, base, subreddit = "honk") {
+function buildPayload(query, levels, base, subreddit = "honk", difficulty = null) {
   const results_page_url = `${base}/results?q=${encodeURIComponent(query)}&sub=${encodeURIComponent(subreddit)}`;
+  const diffLabel = difficulty ? ` [${difficulty}]` : "";
 
   if (levels.length === 0) {
-    return `No levels found for "${query}" in r/${subreddit}. Try a different search term.\n\n${results_page_url}`;
+    return `No levels found for "${query}" in r/${subreddit}${diffLabel}. Try a different search term or difficulty.\n\n${results_page_url}`;
   }
 
   const lines = levels.map((l, i) => {
-    const num   = i + 1;
     const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
     return [
-      `${num}. ${l.title}${flair}`,
+      `${i+1}. ${l.title}${flair}`,
       `by u/${l.author} | Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
       l.url,
     ].join("\n");
   });
 
   return [
-    `${levels.length} result(s) for "${query}" in r/${subreddit}`,
+    `${levels.length} result(s) for "${query}" in r/${subreddit}${diffLabel}`,
     `Full results + cards: ${results_page_url}`,
     `---`,
     lines.join("\n\n"),
