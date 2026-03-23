@@ -284,18 +284,19 @@ function buildPayload(query, levels, base) {
   }
 
   const lines = levels.map((l, i) => {
-    const flair   = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
+    const num   = i + 1;
+    const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
     return [
-      `**${i+1}. ${l.title}**${flair}`,
-      `👤 u/${l.author}  ⬆ ${fmtNum(l.score)}  💬 ${fmtNum(l.num_comments)}  🕐 ${relTime(l.created_at)}`,
-      `🔗 ${l.url}`,
+      `${num}. ${l.title}${flair}`,
+      `by u/${l.author} | Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
+      l.url,
     ].join("\n");
   });
 
   return [
-    `🪿 **${levels.length} result(s) for "${query}" in r/honk**`,
-    `📄 Full results with cards: ${results_page_url}`,
-    "",
+    `${levels.length} result(s) for "${query}" in r/honk`,
+    `Full results + cards: ${results_page_url}`,
+    `---`,
     lines.join("\n\n"),
   ].join("\n");
 }
