@@ -152,20 +152,23 @@ function relTime(iso) {
   return `${Math.floor(dy/30)}mo ago`;
 }
 
-// Format a list of posts into a clean plain text response BotGhost can send via {xxx.response}
+// Format a list of posts into JSON with a response string BotGhost accesses via {xxx.response}
 function formatResponse(header, posts, resultsUrl) {
+  let text;
   if (posts.length === 0) {
-    return `${header}\nNo results found.\n\n${resultsUrl}`;
+    text = `${header}\nNo results found.\n\n${resultsUrl}`;
+  } else {
+    const lines = posts.map((l, i) => {
+      const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
+      return [
+        `${i+1}. ${l.title}${flair}`,
+        `by u/${l.author} | Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
+        l.url,
+      ].join("\n");
+    });
+    text = [header, `Full results: ${resultsUrl}`, "---", lines.join("\n\n")].join("\n");
   }
-  const lines = posts.map((l, i) => {
-    const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
-    return [
-      `${i+1}. ${l.title}${flair}`,
-      `by u/${l.author} | Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
-      l.url,
-    ].join("\n");
-  });
-  return [header, `Full results: ${resultsUrl}`, "---", lines.join("\n\n")].join("\n");
+  return { response: text };
 }
 
 // ─── SVG card renderer ────────────────────────────────────────────────────────
@@ -331,7 +334,7 @@ async function handleSearch(req, res) {
     const header     = `${posts.length} result(s) for "${query}" in r/${subreddit}${diffLabel}`;
 
     log("SEARCH", `Done in ${Date.now()-start}ms — ${posts.length} results`);
-    return res.send(formatResponse(header, posts, resultsUrl));
+    return res.json(formatResponse(header, posts, resultsUrl));
 
   } catch (err) {
     const timedOut = err.code === "ECONNABORTED";
@@ -369,7 +372,7 @@ app.get("/user", async (req, res) => {
     const header     = `${posts.length} level(s) by u/${username} in r/${subreddit}${diffLabel}`;
 
     log("USER", `Done in ${Date.now()-start}ms — ${posts.length} results`);
-    return res.send(formatResponse(header, posts, resultsUrl));
+    return res.json(formatResponse(header, posts, resultsUrl));
 
   } catch (err) {
     log("USER_ERROR", `FAILED: ${err.message}`);
@@ -400,7 +403,7 @@ app.get("/top", async (req, res) => {
     const header     = `Top ${posts.length} level(s) in r/${subreddit} — ${timeLabel}${diffLabel}`;
 
     log("TOP", `Done in ${Date.now()-start}ms — ${posts.length} results`);
-    return res.send(formatResponse(header, posts, resultsUrl));
+    return res.json(formatResponse(header, posts, resultsUrl));
 
   } catch (err) {
     log("TOP_ERROR", `FAILED: ${err.message}`);
