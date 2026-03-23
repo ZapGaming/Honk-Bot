@@ -72,13 +72,31 @@ function getBase(req) {
 }
 
 // ─── Reddit ───────────────────────────────────────────────────────────────────
+// ─── Rotating user agents ─────────────────────────────────────────────────────
+const USER_AGENTS = [
+  "web:honk-level-search:v1.0 (by /u/Damp_Blanket)",
+  "web:honk-level-search:v1.0 (by /u/W6716)",
+  "web:honk-level-search:v1.0 (by /u/SlavBoii420)",
+  "web:honk-level-search:v1.0 (by /u/st_doraemon)",
+];
+let uaIndex = 0;
+function nextUA() {
+  const ua = USER_AGENTS[uaIndex % USER_AGENTS.length];
+  uaIndex = (uaIndex + 1) % USER_AGENTS.length;
+  log("UA", `Using ${ua}`);
+  return ua;
+}
+
 const redditClient = axios.create({
   baseURL: "https://www.reddit.com",
-  headers: {
-    "User-Agent": "web:honk-level-search:v1.0 (by /u/HonkLevelBot)",
-    "Accept":     "application/json",
-  },
+  headers: { "Accept": "application/json" },
   timeout: 12_000,
+});
+
+// Inject rotating UA on every request
+redditClient.interceptors.request.use(config => {
+  config.headers["User-Agent"] = nextUA();
+  return config;
 });
 
 function normalisePost(post) {
