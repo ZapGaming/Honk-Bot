@@ -49,6 +49,18 @@ function getQuery(req) {
   ).trim();
 }
 
+function getSubreddit(req) {
+  const raw = (
+    req.body?.subreddit  ??
+    req.query?.subreddit ??
+    req.body?.sub        ??
+    req.query?.sub       ??
+    "honk"
+  ).trim().replace(/^r\//i, ""); // strip r/ prefix if user typed it
+  // sanitise — only allow alphanumeric and underscores
+  return raw.replace(/[^a-zA-Z0-9_]/g, "") || "honk";
+}
+
 function getLimit(req) {
   const raw = req.body?.limit ?? req.query?.limit;
   return Math.min(parseInt(raw) || 15, 15);
@@ -85,14 +97,15 @@ function normalisePost(post) {
     flair:            post.link_flair_text ?? null,
     selftext_preview: post.selftext?.slice(0, 150) ?? null,
     image_url:        imageUrl,
+    subreddit:        post.subreddit ?? "honk",
   };
 }
 
-async function searchLevels(query, limit = 15) {
-  log("REDDIT", `Searching r/honk for "${query}" limit ${limit}`);
+async function searchLevels(query, limit = 15, subreddit = "honk") {
+  log("REDDIT", `Searching r/${subreddit} for "${query}" limit ${limit}`);
   const start = Date.now();
   try {
-    const res = await redditClient.get("/r/honk/search.json", {
+    const res = await redditClient.get(`/r/${subreddit}/search.json`, {
       params: { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 25, t: "all" },
     });
     const posts = (res.data?.data?.children ?? [])
@@ -112,12 +125,12 @@ async function searchLevels(query, limit = 15) {
   }
 }
 
-async function getSinglePost(postId) {
+async function getSinglePost(postId, subreddit = "honk") {
   const id = postId.replace(/^t3_/, "");
-  log("REDDIT", `Fetching single post ${id}`);
+  log("REDDIT", `Fetching single post ${id} from r/${subreddit}`);
   const start = Date.now();
   try {
-    const res  = await redditClient.get(`/r/honk/comments/${id}.json`, { params: { limit: 1 } });
+    const res  = await redditClient.get(`/r/${subreddit}/comments/${id}.json`, { params: { limit: 1 } });
     const post = res.data?.[0]?.data?.children?.[0]?.data;
     if (!post) throw new Error(`Post ${id} not found`);
     log("REDDIT", `Fetched "${post.title}" in ${Date.now()-start}ms`);
@@ -163,7 +176,7 @@ function renderCard(level, index, total) {
   <text x="${PAD+26}" y="${PAD+16}" fill="${ORANGE}" font-size="11" font-weight="bold" text-anchor="middle">${index} / ${total}</text>
   <rect x="${W-PAD-72}" y="${PAD}" width="68" height="24" rx="5" fill="#1e293b"/>
   <rect x="${W-PAD-72}" y="${PAD}" width="68" height="24" rx="5" stroke="${BORDER}" stroke-width="1" fill="none"/>
-  <text x="${W-PAD-38}" y="${PAD+16}" fill="${MUTED}" font-size="11" text-anchor="middle">r/honk</text>
+  <text x="${W-PAD-38}" y="${PAD+16}" fill="${MUTED}" font-size="11" text-anchor="middle">r/${esc(level.subreddit??"honk")}</text>
   <text x="${PAD+58}" y="${PAD+18}" fill="${TEXT}" font-size="16" font-weight="bold">${esc(trunc(level.title,60))}</text>
   <text x="${PAD+58}" y="${PAD+42}" font-size="12" fill="${MUTED}">
     <tspan fill="${GOLD}" font-weight="bold">u/${esc(level.author)}</tspan>
@@ -276,11 +289,11 @@ function buildResultsPage(query, levels, base) {
 }
 
 // ─── Payload builder ──────────────────────────────────────────────────────────
-function buildPayload(query, levels, base) {
-  const results_page_url = `${base}/results?q=${encodeURIComponent(query)}`;
+function buildPayload(query, levels, base, subreddit = "honk") {
+  const results_page_url = `${base}/results?q=${encodeURIComponent(query)}&sub=${encodeURIComponent(subreddit)}`;
 
   if (levels.length === 0) {
-    return `🪿 No levels found for "${query}" in r/honk. Try a different search term.\n\n🔗 ${results_page_url}`;
+    return `No levels found for "${query}" in r/${subreddit}. Try a different search term.\n\n${results_page_url}`;
   }
 
   const lines = levels.map((l, i) => {
@@ -294,7 +307,7 @@ function buildPayload(query, levels, base) {
   });
 
   return [
-    `${levels.length} result(s) for "${query}" in r/honk`,
+    `${levels.length} result(s) for "${query}" in r/${subreddit}`,
     `Full results + cards: ${results_page_url}`,
     `---`,
     lines.join("\n\n"),
@@ -307,12 +320,13 @@ app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
 // GET /results?q=... — HTML page linked from embed title
 app.get("/results", async (req, res) => {
-  const query = (req.query.q ?? req.query.query ?? "").trim();
-  const base  = getBase(req);
-  log("RESULTS_PAGE", `Rendering HTML page for "${query}"`);
+  const query     = (req.query.q ?? req.query.query ?? "").trim();
+  const subreddit = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
+  const base      = getBase(req);
+  log("RESULTS_PAGE", `Rendering HTML page for "${query}" in r/${subreddit}`);
   if (!query) return res.status(400).send("<h1>Missing ?q= param</h1>");
   try {
-    const levels = await searchLevels(query, 15);
+    const levels = await searchLevels(query, 15, subreddit);
     res.setHeader("Content-Type", "text/html");
     return res.send(buildResultsPage(query, levels, base));
   } catch (err) {
@@ -408,11 +422,12 @@ app.get("/card/:postId/svg", async (req, res) => {
 // ─── GET /image?q=... — returns the first result's PNG card directly ───────────
 // BotGhost Image URL field: https://honk-bot.onrender.com/image?q={option_query}
 app.get("/image", async (req, res) => {
-  const query = (req.query.q ?? req.query.query ?? "").trim();
-  log("IMAGE", `Fetching first result image for "${query}"`);
+  const query     = (req.query.q ?? req.query.query ?? "").trim();
+  const subreddit = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
+  log("IMAGE", `Fetching first result image for "${query}" in r/${subreddit}`);
   if (!query) return res.status(400).send("Missing ?q= param");
   try {
-    const levels = await searchLevels(query, 1);
+    const levels = await searchLevels(query, 1, subreddit);
     if (levels.length === 0) {
       // Return a simple "no results" PNG card
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="220" font-family="sans-serif">
@@ -464,9 +479,10 @@ process.on("unhandledRejection", (r)   => log("UNHANDLED", String(r)));
 
 app.listen(PORT, () => {
   log("STARTUP", `honk-render-server running on port ${PORT}`);
-  log("STARTUP", "GET  /search?q=...          JSON for BotGhost");
-  log("STARTUP", "POST /search  {query:...}   JSON for BotGhost");
-  log("STARTUP", "GET  /results?q=...         HTML results page");
-  log("STARTUP", "GET  /card/:id/png          PNG card image");
-  log("STARTUP", "GET  /card/:id/svg          SVG card (debug)");
+  log("STARTUP", "GET  /search?q=...&sub=...          JSON for BotGhost");
+  log("STARTUP", "POST /search  {query:...,subreddit:...}  JSON for BotGhost");
+  log("STARTUP", "GET  /results?q=...&sub=...         HTML results page");
+  log("STARTUP", "GET  /image?q=...&sub=...           PNG card for first result");
+  log("STARTUP", "GET  /card/:id/png                  PNG card image");
+  log("STARTUP", "GET  /card/:id/svg                  SVG card (debug)");
 });
