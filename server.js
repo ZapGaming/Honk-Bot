@@ -4,7 +4,6 @@ import { Resvg } from "@resvg/resvg-js";
 
 const app = express();
 const PORT = process.env.PORT || 3847;
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -26,61 +25,76 @@ function log(tag, msg, data = null) {
 
 app.use((req, _res, next) => {
   log("REQUEST", `${req.method} ${req.path}`, {
-    query:  req.query,
-    body:   req.body,
-    ip:     req.headers["x-forwarded-for"] ?? req.socket.remoteAddress,
-    ua:     req.headers["user-agent"],
+    query: req.query,
+    body:  req.body,
+    ip:    req.headers["x-forwarded-for"] ?? req.socket.remoteAddress,
+    ua:    req.headers["user-agent"],
   });
   next();
 });
 
-// ─── Query extractor — works for GET params AND POST JSON body ────────────────
-// GET  /search?q=Rollercoaster
-// GET  /search?query=Rollercoaster
-// POST /search  body: { "query": "Rollercoaster" }
-// POST /search  body: { "q": "Rollercoaster" }
+// ─── Rotating user agents ─────────────────────────────────────────────────────
+const USER_AGENTS = [
+  "web:honk-level-search:v1.0 (by /u/Damp_Blanket)",
+  "web:honk-level-search:v1.0 (by /u/W6716)",
+  "web:honk-level-search:v1.0 (by /u/SlavBoii420)",
+  "web:honk-level-search:v1.0 (by /u/st_doraemon)",
+];
+let uaIndex = 0;
+function nextUA() {
+  const ua = USER_AGENTS[uaIndex % USER_AGENTS.length];
+  uaIndex = (uaIndex + 1) % USER_AGENTS.length;
+  log("UA", ua);
+  return ua;
+}
+
+// ─── Reddit client ────────────────────────────────────────────────────────────
+const redditClient = axios.create({
+  baseURL: "https://www.reddit.com",
+  headers: { "Accept": "application/json" },
+  timeout: 12_000,
+});
+redditClient.interceptors.request.use(config => {
+  config.headers["User-Agent"] = nextUA();
+  return config;
+});
+
+// ─── Difficulties ─────────────────────────────────────────────────────────────
+const DIFFICULTIES = [
+  "🍰 VERY EASY",
+  "🟢 EASY",
+  "🟡 MEDIUM",
+  "🔴 HARD",
+  "🔥 INSANE",
+  "💀🔥 NEAR IMPOSSIBLE",
+  "🔥💀🔥 IMPOSSIBLE",
+];
+
+// ─── Param helpers ────────────────────────────────────────────────────────────
 function getQuery(req) {
-  return (
-    req.body?.query   ??
-    req.body?.q       ??
-    req.query?.q      ??
-    req.query?.query  ??
-    ""
-  ).trim();
+  return (req.body?.query ?? req.body?.q ?? req.query?.q ?? req.query?.query ?? "").trim();
 }
 
 function getSubreddit(req) {
-  const raw = (
-    req.body?.subreddit  ??
-    req.query?.subreddit ??
-    req.body?.sub        ??
-    req.query?.sub       ??
-    "honk"
-  ).trim().replace(/^r\//i, ""); // strip r/ prefix if user typed it
-  // sanitise — only allow alphanumeric and underscores
-  return raw.replace(/[^a-zA-Z0-9_]/g, "") || "honk";
+  const raw = (req.body?.subreddit ?? req.query?.subreddit ?? req.body?.sub ?? req.query?.sub ?? "honk").trim();
+  return raw.replace(/^r\//i, "").replace(/[^a-zA-Z0-9_]/g, "") || "honk";
 }
 
 function getLimit(req) {
-  const raw = req.body?.limit ?? req.query?.limit;
-  return Math.min(parseInt(raw) || 15, 15);
+  return Math.min(parseInt(req.body?.limit ?? req.query?.limit) || 15, 15);
+}
+
+function getDifficulty(req) {
+  const raw = (req.body?.difficulty ?? req.query?.difficulty ?? "").trim();
+  if (!raw) return null;
+  return DIFFICULTIES.find(d => d.toLowerCase() === raw.toLowerCase()) ?? null;
 }
 
 function getBase(req) {
-  const host = req.get("host");
-  return process.env.BASE_URL ?? `https://${host}`;
+  return process.env.BASE_URL ?? `https://${req.get("host")}`;
 }
 
 // ─── Reddit ───────────────────────────────────────────────────────────────────
-const redditClient = axios.create({
-  baseURL: "https://www.reddit.com",
-  headers: {
-    "User-Agent": "web:honk-level-search:v1.0 (by /u/HonkLevelBot)",
-    "Accept":     "application/json",
-  },
-  timeout: 12_000,
-});
-
 function normalisePost(post) {
   let imageUrl = null;
   if (post.thumbnail && !["self","default","nsfw",""].includes(post.thumbnail)) imageUrl = post.thumbnail;
@@ -90,7 +104,7 @@ function normalisePost(post) {
     title:            post.title,
     author:           post.author,
     score:            post.score,
-    upvote_ratio:     post.upvote_ratio,
+    upvote_ratio:     post.upvote_ratio ?? 0,
     num_comments:     post.num_comments,
     created_at:       new Date(post.created_utc * 1000).toISOString(),
     url:              `https://reddit.com${post.permalink}`,
@@ -101,26 +115,30 @@ function normalisePost(post) {
   };
 }
 
+function filterByDifficulty(posts, difficulty) {
+  if (!difficulty) return posts;
+  return posts.filter(p => (p.flair ?? "").toLowerCase().trim() === difficulty.toLowerCase().trim());
+}
+
 async function searchLevels(query, limit = 15, subreddit = "honk") {
   log("REDDIT", `Searching r/${subreddit} for "${query}" limit ${limit}`);
   const start = Date.now();
   try {
     const res = await redditClient.get(`/r/${subreddit}/search.json`, {
-      params: { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 25, t: "all" },
+      params: { q: query, restrict_sr: 1, sort: "relevance", type: "link", limit: 50, t: "all" },
     });
     const posts = (res.data?.data?.children ?? [])
       .map(c => c.data)
       .filter(p => !p.removed_by_category)
-      .slice(0, limit)
       .map(normalisePost);
     log("REDDIT", `Got ${posts.length} results in ${Date.now()-start}ms`);
     return posts;
   } catch (err) {
     const ms = Date.now() - start;
-    if (err.code === "ECONNABORTED")  log("REDDIT_ERROR", `TIMED OUT after ${ms}ms`);
+    if (err.code === "ECONNABORTED")       log("REDDIT_ERROR", `TIMED OUT after ${ms}ms`);
     else if (err.response?.status === 429) log("REDDIT_ERROR", `RATE LIMITED (429) after ${ms}ms`);
-    else if (err.response)            log("REDDIT_ERROR", `HTTP ${err.response.status} after ${ms}ms`);
-    else                              log("REDDIT_ERROR", `FAILED after ${ms}ms: ${err.message}`);
+    else if (err.response)                 log("REDDIT_ERROR", `HTTP ${err.response.status} after ${ms}ms`);
+    else                                   log("REDDIT_ERROR", `FAILED after ${ms}ms: ${err.message}`);
     throw err;
   }
 }
@@ -153,6 +171,18 @@ function relTime(iso) {
   return `${Math.floor(dy/30)}mo ago`;
 }
 
+// ─── Shared response formatter — plain text BotGhost reads via {xxx.response} ─
+function formatPosts(header, posts, resultsUrl) {
+  if (posts.length === 0) {
+    return `${header}\nNo results found.\n${resultsUrl}`;
+  }
+  const lines = posts.map((l, i) => {
+    const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
+    return `${i+1}. ${l.title}${flair}\nby u/${l.author} | Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}\n${l.url}`;
+  });
+  return `${header}\nFull results: ${resultsUrl}\n---\n${lines.join("\n\n")}`;
+}
+
 // ─── SVG card renderer ────────────────────────────────────────────────────────
 function renderCard(level, index, total) {
   const W=800,H=220,PAD=24;
@@ -162,7 +192,6 @@ function renderCard(level, index, total) {
   const barColor = ratio>=95 ? ORANGE : ratio>=80 ? GOLD : "#86efac";
   const flair    = level.flair && level.flair!=="none" ? esc(trunc(level.flair,28)) : null;
   const flairW   = flair ? Math.min(flair.length*8+24, 200) : 0;
-
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${NAVY}"/><stop offset="100%" stop-color="#1a2540"/></linearGradient>
@@ -178,22 +207,17 @@ function renderCard(level, index, total) {
   <rect x="${W-PAD-72}" y="${PAD}" width="68" height="24" rx="5" stroke="${BORDER}" stroke-width="1" fill="none"/>
   <text x="${W-PAD-38}" y="${PAD+16}" fill="${MUTED}" font-size="11" text-anchor="middle">r/${esc(level.subreddit??"honk")}</text>
   <text x="${PAD+58}" y="${PAD+18}" fill="${TEXT}" font-size="16" font-weight="bold">${esc(trunc(level.title,60))}</text>
-  <text x="${PAD+58}" y="${PAD+42}" font-size="12" fill="${MUTED}">
-    <tspan fill="${GOLD}" font-weight="bold">u/${esc(level.author)}</tspan>
-    <tspan fill="${MUTED}">  ·  ${relTime(level.created_at)}</tspan>
-  </text>
-  ${flair ? `
-  <rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" fill="${ORANGE}" opacity="0.15"/>
+  <text x="${PAD+58}" y="${PAD+42}" font-size="12" fill="${MUTED}"><tspan fill="${GOLD}" font-weight="bold">u/${esc(level.author)}</tspan><tspan fill="${MUTED}">  ·  ${relTime(level.created_at)}</tspan></text>
+  ${flair ? `<rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" fill="${ORANGE}" opacity="0.15"/>
   <rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" stroke="${ORANGE}" stroke-width="0.8" fill="none"/>
-  <text x="${PAD+58+flairW/2}" y="${PAD+67}" fill="${ORANGE}" font-size="10" font-weight="bold" text-anchor="middle">${flair}</text>
-  ` : ""}
+  <text x="${PAD+58+flairW/2}" y="${PAD+67}" fill="${ORANGE}" font-size="10" font-weight="bold" text-anchor="middle">${flair}</text>` : ""}
   <line x1="${PAD}" y1="${H-72}" x2="${W-PAD}" y2="${H-72}" stroke="${BORDER}" stroke-width="1"/>
-  <text x="${PAD+8}"   y="${H-50}" fill="${MUTED}"     font-size="10" letter-spacing="1">SCORE</text>
-  <text x="${PAD+8}"   y="${H-30}" fill="${ORANGE}"    font-size="18" font-weight="bold">${fmtNum(level.score)}</text>
-  <text x="${PAD+90}"  y="${H-50}" fill="${MUTED}"     font-size="10" letter-spacing="1">COMMENTS</text>
-  <text x="${PAD+90}"  y="${H-30}" fill="${TEXT}"      font-size="18" font-weight="bold">${fmtNum(level.num_comments)}</text>
-  <text x="${PAD+220}" y="${H-50}" fill="${MUTED}"     font-size="10" letter-spacing="1">UPVOTE RATIO</text>
-  <text x="${PAD+220}" y="${H-30}" fill="${barColor}"  font-size="18" font-weight="bold">${ratio}%</text>
+  <text x="${PAD+8}"   y="${H-50}" fill="${MUTED}"    font-size="10" letter-spacing="1">SCORE</text>
+  <text x="${PAD+8}"   y="${H-30}" fill="${ORANGE}"   font-size="18" font-weight="bold">${fmtNum(level.score)}</text>
+  <text x="${PAD+90}"  y="${H-50}" fill="${MUTED}"    font-size="10" letter-spacing="1">COMMENTS</text>
+  <text x="${PAD+90}"  y="${H-30}" fill="${TEXT}"     font-size="18" font-weight="bold">${fmtNum(level.num_comments)}</text>
+  <text x="${PAD+220}" y="${H-50}" fill="${MUTED}"    font-size="10" letter-spacing="1">UPVOTE RATIO</text>
+  <text x="${PAD+220}" y="${H-30}" fill="${barColor}" font-size="18" font-weight="bold">${ratio}%</text>
   <rect x="${PAD+220}" y="${H-20}" width="${W-PAD*2-220}"      height="6" rx="3" fill="${BORDER}"/>
   <rect x="${PAD+220}" y="${H-20}" width="${Math.max(barW,6)}" height="6" rx="3" fill="${barColor}"/>
   <text x="${W-PAD}" y="${H-8}" fill="${ORANGE}" font-size="10" text-anchor="end" opacity="0.7">${esc(trunc(level.url,55))}</text>
@@ -203,17 +227,14 @@ function renderCard(level, index, total) {
 function svgToPng(svg) {
   log("RENDER", "Converting SVG → PNG");
   const start = Date.now();
-  const png = new Resvg(svg, {
-    fitTo: { mode: "width", value: 1600 },
-    font:  { loadSystemFonts: true },
-  }).render().asPng();
+  const png = new Resvg(svg, { fitTo: { mode: "width", value: 1600 }, font: { loadSystemFonts: true } }).render().asPng();
   log("RENDER", `PNG done in ${Date.now()-start}ms — ${(png.length/1024).toFixed(1)}KB`);
   return png;
 }
 
 // ─── Results HTML page ────────────────────────────────────────────────────────
-function buildResultsPage(query, levels, base) {
-  const cards = levels.map((l) => {
+function buildResultsPage(query, levels, base, subreddit) {
+  const cards = levels.map(l => {
     const flair   = l.flair ? `<span class="flair">${esc(l.flair)}</span>` : "";
     const preview = l.selftext_preview ? `<p class="preview">${esc(l.selftext_preview)}</p>` : "";
     const ratio   = Math.round((l.upvote_ratio ?? 0) * 100);
@@ -244,7 +265,7 @@ function buildResultsPage(query, levels, base) {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>r/honk — "${esc(query)}"</title>
+  <title>r/${esc(subreddit)} — "${esc(query)}"</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:#0f172a;color:#f1f5f9;font-family:'Courier New',monospace;min-height:100vh;padding-bottom:60px}
@@ -274,7 +295,7 @@ function buildResultsPage(query, levels, base) {
   <header>
     <span class="goose">🪿</span>
     <div>
-      <h1>r/honk level search</h1>
+      <h1>r/${esc(subreddit)} level search</h1>
       <p>Results for: <strong style="color:#f1f5f9">${esc(query)}</strong></p>
     </div>
     <span class="badge">${levels.length} result${levels.length!==1?"s":""}</span>
@@ -283,162 +304,157 @@ function buildResultsPage(query, levels, base) {
     ? `<div style="text-align:center;padding:80px 20px;color:#64748b">🪿 No levels found for "${esc(query)}"</div>`
     : cards
   }</main>
-  <footer>🪿 honk-render-server · r/honk level search</footer>
+  <footer>🪿 honk-render-server · r/${esc(subreddit)} level search</footer>
 </body>
 </html>`;
-}
-
-// ─── Payload builder ──────────────────────────────────────────────────────────
-function buildPayload(query, levels, base, subreddit = "honk") {
-  const results_page_url = `${base}/results?q=${encodeURIComponent(query)}&sub=${encodeURIComponent(subreddit)}`;
-
-  if (levels.length === 0) {
-    return `No levels found for "${query}" in r/${subreddit}. Try a different search term.\n\n${results_page_url}`;
-  }
-
-  const lines = levels.map((l, i) => {
-    const num   = i + 1;
-    const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
-    return [
-      `${num}. ${l.title}${flair}`,
-      `by u/${l.author} | Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
-      l.url,
-    ].join("\n");
-  });
-
-  return [
-    `${levels.length} result(s) for "${query}" in r/${subreddit}`,
-    `Full results + cards: ${results_page_url}`,
-    `---`,
-    lines.join("\n\n"),
-  ].join("\n");
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get("/",       (_req, res) => res.json({ status: "ok" }));
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
-// GET /results?q=... — HTML page linked from embed title
+// GET /results?q=...&sub=... — HTML results page
 app.get("/results", async (req, res) => {
   const query     = (req.query.q ?? req.query.query ?? "").trim();
   const subreddit = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
   const base      = getBase(req);
-  log("RESULTS_PAGE", `Rendering HTML page for "${query}" in r/${subreddit}`);
+  log("RESULTS_PAGE", `"${query}" in r/${subreddit}`);
   if (!query) return res.status(400).send("<h1>Missing ?q= param</h1>");
   try {
     const levels = await searchLevels(query, 15, subreddit);
     res.setHeader("Content-Type", "text/html");
-    return res.send(buildResultsPage(query, levels, base));
+    return res.send(buildResultsPage(query, levels, base, subreddit));
   } catch (err) {
     log("RESULTS_PAGE_ERROR", err.message);
     return res.status(500).send(`<h1 style="color:red">Error: ${err.message}</h1>`);
   }
 });
 
-// GET /search?q=...  OR  POST /search  body: { "query": "..." }
+// GET /search?q=...&difficulty=...&sub=...&limit=...
+// POST /search body: { query, difficulty, subreddit, limit }
+// BotGhost reads response via {honk.response}
 async function handleSearch(req, res) {
-  const query = getQuery(req);
-  const limit = getLimit(req);
-  const base  = getBase(req);
-  const start = Date.now();
+  const query      = getQuery(req);
+  const subreddit  = getSubreddit(req);
+  const difficulty = getDifficulty(req);
+  const limit      = getLimit(req);
+  const base       = getBase(req);
+  const start      = Date.now();
 
-  log("SEARCH", `Method: ${req.method} | Query: "${query}" | Limit: ${limit}`);
+  log("SEARCH", `"${query}" | sub: r/${subreddit} | difficulty: ${difficulty ?? "any"} | limit: ${limit}`);
 
   if (!query) {
-    log("SEARCH_ERROR", "Rejected — query is empty or missing");
-    return res.status(400).json({
-      found:       false,
-      total:       0,
-      embed_title: "❌ Missing query",
-      embed_desc:  "Provide a level name to search for.",
-      embed_url:   "",
-      embed_color: "#ef4444",
-      embed_footer:"r/honk level search",
-    });
+    log("SEARCH_ERROR", "Missing query");
+    return res.status(400).send("No results found — missing query.");
   }
 
   try {
-    const levels  = await searchLevels(query, limit);
-    const response = buildPayload(query, levels, base);
-    log("SEARCH", `Done in ${Date.now()-start}ms — returning ${levels.length} results`);
-    // Return as plain text string so BotGhost {honk.response} works directly
-    return res.send(response);
+    let levels = await searchLevels(query, 50, subreddit);
+    levels     = filterByDifficulty(levels, difficulty).slice(0, limit);
+
+    const diffLabel  = difficulty ? ` [${difficulty}]` : "";
+    const resultsUrl = `${base}/results?q=${encodeURIComponent(query)}&sub=${encodeURIComponent(subreddit)}`;
+    const header     = `${levels.length} result(s) for "${query}" in r/${subreddit}${diffLabel}`;
+
+    log("SEARCH", `Done in ${Date.now()-start}ms — ${levels.length} results`);
+    return res.send(formatPosts(header, levels, resultsUrl));
+
   } catch (err) {
     const ms       = Date.now() - start;
-    const timedOut = err.code === "ECONNABORTED" || err.message.includes("timeout");
+    const timedOut = err.code === "ECONNABORTED";
     const limited  = err.response?.status === 429;
     log("SEARCH_ERROR", `${timedOut?"TIMEOUT":limited?"RATE_LIMITED":"FAILED"} after ${ms}ms: ${err.message}`);
-    return res.status(timedOut ? 504 : limited ? 429 : 500).json({
-      found:       false,
-      total:       0,
-      embed_title: timedOut ? "⏱️ Timeout" : limited ? "🚦 Rate Limited" : "❌ Error",
-      embed_desc:  timedOut ? "Reddit took too long. Try again in a moment."
-                 : limited  ? "Too many requests to Reddit. Try again in 30 seconds."
-                 :            `Search failed: ${err.message}`,
-      embed_url:   "",
-      embed_color: "#ef4444",
-      embed_footer:"r/honk level search",
-    });
+    return res.send(
+      timedOut ? "Reddit took too long to respond. Try again in a moment." :
+      limited  ? "Too many requests to Reddit. Try again in 30 seconds." :
+                 `Search failed: ${err.message}`
+    );
   }
 }
-
 app.get("/search",  handleSearch);
 app.post("/search", handleSearch);
 
-// GET /card/:postId/png — PNG card image
-app.get("/card/:postId/png", async (req, res) => {
-  const { postId } = req.params;
-  const index = parseInt(req.query.index) || 1;
-  const total = parseInt(req.query.total) || 1;
-  const start = Date.now();
-  log("CARD", `Rendering PNG for ${postId} (${index}/${total})`);
+// GET /user?u=username&difficulty=...&sub=...
+// BotGhost reads response via {user.response}
+app.get("/user", async (req, res) => {
+  const username   = (req.query.u ?? req.query.username ?? "").trim().replace(/^u\//i, "");
+  const subreddit  = getSubreddit(req);
+  const difficulty = getDifficulty(req);
+  const base       = getBase(req);
+  const start      = Date.now();
+
+  log("USER", `u/${username} in r/${subreddit} | difficulty: ${difficulty ?? "any"}`);
+  if (!username) return res.status(400).send("Missing ?u= param (reddit username)");
+
   try {
-    const level = await getSinglePost(postId);
-    const png   = svgToPng(renderCard(level, index, total));
-    log("CARD", `Done in ${Date.now()-start}ms`);
-    res.setHeader("Content-Type", "image/png");
-    res.setHeader("Cache-Control", "public, max-age=300");
-    return res.end(png);
+    let levels = await searchLevels(`author:${username}`, 50, subreddit);
+    levels     = filterByDifficulty(levels, difficulty).slice(0, 15);
+
+    const diffLabel  = difficulty ? ` [${difficulty}]` : "";
+    const resultsUrl = `${base}/results?q=${encodeURIComponent(`author:${username}`)}&sub=${encodeURIComponent(subreddit)}`;
+    const header     = `${levels.length} level(s) by u/${username} in r/${subreddit}${diffLabel}`;
+
+    log("USER", `Done in ${Date.now()-start}ms — ${levels.length} results`);
+    return res.send(formatPosts(header, levels, resultsUrl));
+
   } catch (err) {
-    log("CARD_ERROR", `Failed for ${postId}: ${err.message}`);
-    return res.status(404).json({ error: err.message });
+    log("USER_ERROR", `FAILED: ${err.message}`);
+    return res.send(`Error fetching levels: ${err.message}`);
   }
 });
 
-// GET /card/:postId/svg — raw SVG for debugging
-app.get("/card/:postId/svg", async (req, res) => {
-  const { postId } = req.params;
-  log("CARD_SVG", `Rendering SVG for ${postId}`);
+// GET /top?timeframe=week&difficulty=...&sub=...
+// BotGhost reads response via {top.response}
+app.get("/top", async (req, res) => {
+  const rawTime    = (req.query.timeframe ?? req.body?.timeframe ?? "all").toLowerCase().trim();
+  const subreddit  = getSubreddit(req);
+  const difficulty = getDifficulty(req);
+  const base       = getBase(req);
+  const start      = Date.now();
+  const timeMap    = { today:"day", day:"day", week:"week", "this week":"week", month:"month", "this month":"month", year:"year", all:"all", "all time":"all" };
+  const t          = timeMap[rawTime] ?? "all";
+  const timeLabel  = { day:"Today", week:"This Week", month:"This Month", year:"This Year", all:"All Time" }[t];
+
+  log("TOP", `r/${subreddit} | t=${t} | difficulty: ${difficulty ?? "any"}`);
+
   try {
-    const level = await getSinglePost(postId);
-    res.setHeader("Content-Type", "image/svg+xml");
-    return res.send(renderCard(level, parseInt(req.query.index)||1, parseInt(req.query.total)||1));
+    const res2 = await redditClient.get(`/r/${subreddit}/top.json`, { params: { t, limit: 50 } });
+    let levels = (res2.data?.data?.children ?? [])
+      .map(c => c.data)
+      .filter(p => !p.removed_by_category)
+      .map(normalisePost);
+    levels     = filterByDifficulty(levels, difficulty).slice(0, 15);
+
+    const diffLabel  = difficulty ? ` [${difficulty}]` : "";
+    const resultsUrl = `${base}/results?q=top&sub=${encodeURIComponent(subreddit)}`;
+    const header     = `Top ${levels.length} level(s) in r/${subreddit} — ${timeLabel}${diffLabel}`;
+
+    log("TOP", `Done in ${Date.now()-start}ms — ${levels.length} results`);
+    return res.send(formatPosts(header, levels, resultsUrl));
+
   } catch (err) {
-    log("CARD_SVG_ERROR", `Failed: ${err.message}`);
-    return res.status(404).json({ error: err.message });
+    log("TOP_ERROR", `FAILED: ${err.message}`);
+    return res.send(`Error fetching top levels: ${err.message}`);
   }
 });
 
-// ─── GET /image?q=... — returns the first result's PNG card directly ───────────
-// BotGhost Image URL field: https://honk-bot.onrender.com/image?q={option_query}
+// GET /image?q=...&sub=... — first result PNG card for Discord embed image field
 app.get("/image", async (req, res) => {
   const query     = (req.query.q ?? req.query.query ?? "").trim();
   const subreddit = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
-  log("IMAGE", `Fetching first result image for "${query}" in r/${subreddit}`);
+  log("IMAGE", `"${query}" in r/${subreddit}`);
   if (!query) return res.status(400).send("Missing ?q= param");
   try {
     const levels = await searchLevels(query, 1, subreddit);
     if (levels.length === 0) {
-      // Return a simple "no results" PNG card
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="220" font-family="sans-serif">
         <rect width="800" height="220" rx="8" fill="#0f172a"/>
         <rect x="0" y="0" width="5" height="220" fill="#f97316"/>
-        <text x="400" y="100" fill="#94a3b8" font-size="24" text-anchor="middle">🪿 No results found</text>
-        <text x="400" y="135" fill="#64748b" font-size="16" text-anchor="middle">Nothing in r/honk matching "${esc(query)}"</text>
+        <text x="400" y="100" fill="#94a3b8" font-size="24" text-anchor="middle">No results found</text>
+        <text x="400" y="135" fill="#64748b" font-size="16" text-anchor="middle">Nothing in r/${esc(subreddit)} matching "${esc(query)}"</text>
       </svg>`;
-      const png = svgToPng(svg);
       res.setHeader("Content-Type", "image/png");
-      return res.end(png);
+      return res.end(svgToPng(svg));
     }
     const png = svgToPng(renderCard(levels[0], 1, 1));
     res.setHeader("Content-Type", "image/png");
@@ -450,21 +466,39 @@ app.get("/image", async (req, res) => {
   }
 });
 
-// ─── GET /title?q=... — returns plain text title for first result ─────────────
-// Useful for embed title field if BotGhost ever supports URL-fetched text
-app.get("/title", async (req, res) => {
-  const query = (req.query.q ?? req.query.query ?? "").trim();
-  log("TITLE", `Fetching title for "${query}"`);
-  if (!query) return res.status(400).send("Missing ?q= param");
+// GET /card/:postId/png
+app.get("/card/:postId/png", async (req, res) => {
+  const { postId } = req.params;
+  const subreddit  = getSubreddit(req);
+  const index      = parseInt(req.query.index) || 1;
+  const total      = parseInt(req.query.total) || 1;
+  log("CARD", `PNG for ${postId} (${index}/${total})`);
   try {
-    const levels = await searchLevels(query, 1);
-    const text = levels.length > 0
-      ? `🪿 ${levels.length > 1 ? "15" : "1"} result(s) for "${query}" in r/honk`
-      : `🪿 No results for "${query}" in r/honk`;
-    res.setHeader("Content-Type", "text/plain");
-    return res.send(text);
+    const level = await getSinglePost(postId, subreddit);
+    const png   = svgToPng(renderCard(level, index, total));
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.end(png);
   } catch (err) {
-    res.status(500).send("Error");
+    log("CARD_ERROR", `Failed for ${postId}: ${err.message}`);
+    return res.status(404).json({ error: err.message });
+  }
+});
+
+// GET /card/:postId/svg
+app.get("/card/:postId/svg", async (req, res) => {
+  const { postId } = req.params;
+  const subreddit  = getSubreddit(req);
+  const index      = parseInt(req.query.index) || 1;
+  const total      = parseInt(req.query.total) || 1;
+  log("CARD_SVG", `SVG for ${postId}`);
+  try {
+    const level = await getSinglePost(postId, subreddit);
+    res.setHeader("Content-Type", "image/svg+xml");
+    return res.send(renderCard(level, index, total));
+  } catch (err) {
+    log("CARD_SVG_ERROR", `Failed: ${err.message}`);
+    return res.status(404).json({ error: err.message });
   }
 });
 
@@ -474,15 +508,16 @@ app.use((req, res) => {
   res.status(404).json({ error: `Not found: ${req.method} ${req.path}` });
 });
 
-process.on("uncaughtException",  (err) => log("UNCAUGHT",  err.message, { stack: err.stack }));
-process.on("unhandledRejection", (r)   => log("UNHANDLED", String(r)));
+process.on("uncaughtException",  err => log("UNCAUGHT",  err.message, { stack: err.stack }));
+process.on("unhandledRejection", r   => log("UNHANDLED", String(r)));
 
 app.listen(PORT, () => {
   log("STARTUP", `honk-render-server running on port ${PORT}`);
-  log("STARTUP", "GET  /search?q=...&sub=...          JSON for BotGhost");
-  log("STARTUP", "POST /search  {query:...,subreddit:...}  JSON for BotGhost");
-  log("STARTUP", "GET  /results?q=...&sub=...         HTML results page");
-  log("STARTUP", "GET  /image?q=...&sub=...           PNG card for first result");
-  log("STARTUP", "GET  /card/:id/png                  PNG card image");
-  log("STARTUP", "GET  /card/:id/svg                  SVG card (debug)");
+  log("STARTUP", "GET/POST /search?q=...&difficulty=...&sub=...&limit=...  → {honk.response}");
+  log("STARTUP", "GET      /user?u=...&difficulty=...&sub=...              → {user.response}");
+  log("STARTUP", "GET      /top?timeframe=...&difficulty=...&sub=...       → {top.response}");
+  log("STARTUP", "GET      /image?q=...&sub=...                            → PNG card");
+  log("STARTUP", "GET      /results?q=...&sub=...                          → HTML page");
+  log("STARTUP", "GET      /card/:id/png                                   → PNG card");
+  log("STARTUP", "GET      /card/:id/svg                                   → SVG debug");
 });
