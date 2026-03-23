@@ -378,78 +378,126 @@ app.get("/card/:postId/svg", async (req, res) => {
 });
 
 
-// ─── GET /midi?q=... — search GitHub for MIDI files ──────────────────────────
-// Uses GitHub code search API to find .mid files matching the query.
-// Returns plain text list with direct download URLs — BotGhost reads via {midi.response}
-// Optional: ?limit=5 (max 10)
-//
-// To avoid GitHub rate limits, set GITHUB_TOKEN env var on Render:
-//   Settings → Environment → GITHUB_TOKEN = your personal access token (free)
+// ─── GET /midi?q=... — MIDI file search ──────────────────────────────────────
+// Supports both:
+//   {option_song}       — plain text e.g. "Shake It Off Taylor Swift"
+//   {option_song.title} — BotGhost smart search e.g. "Shake It Off - Taylor Swift"
+// Scrapes bitmidi.com → midiworld.com → GitHub (fallback)
+// BotGhost reads via {midi.response}
 app.get("/midi", async (req, res) => {
   res.status(200);
   res.setHeader("Content-Type", "text/plain");
 
-  const query = (req.query.q ?? req.query.query ?? "").trim();
+  const raw = (req.query.q ?? req.query.query ?? req.query.song ?? "").trim();
+  if (!raw || /^\{.*\}$/.test(raw)) return res.send("Please provide a song name.");
+
+  // Strip " - " separator from smart search format "Title - Artist" → "Title Artist"
+  const query = raw.replace(/\s*-\s*/g, " ").trim();
   const limit = Math.min(parseInt(req.query.limit) || 5, 10);
 
-  log("MIDI", `Searching for "${query}" limit ${limit}`);
+  log("MIDI", `Searching for "${query}" (raw: "${raw}") limit ${limit}`);
 
-  if (!query) return res.send("Please provide a search query e.g. ?q=mario");
+  const result = await searchBitMidi(query, limit)
+    || await searchMidiWorld(query, limit)
+    || await searchGitHub(query, limit);
 
+  return res.send(result ?? `No MIDI files found for "${raw}". Try a simpler search like just the song title.`);
+});
+
+async function searchBitMidi(query, limit) {
   try {
+    log("MIDI_BITMIDI", `Trying bitmidi.com for "${query}"`);
+    const res = await axios.get("https://bitmidi.com/search", {
+      params: { q: query },
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "text/html" },
+      timeout: 10_000,
+    });
+    const html = res.data;
+    const matches = [...html.matchAll(/href="(\/[a-z0-9-]+-midi)"/gi)];
+    if (!matches.length) return null;
+    const seen = new Set();
+    const items = [];
+    for (const m of matches) {
+      const path = m[1];
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const slug = path.replace(/^\//, "").replace(/-midi$/, "");
+      items.push({
+        name: slug + ".mid",
+        downloadUrl: `https://bitmidi.com/uploads/${slug}.mid`,
+        pageUrl: `https://bitmidi.com${path}`,
+      });
+      if (items.length >= limit) break;
+    }
+    if (!items.length) return null;
+    const lines = items.map((it, i) => `${i+1}. ${it.name}\nPage: ${it.pageUrl}\nDownload: ${it.downloadUrl}`);
+    const body = `${items.length} MIDI file(s) for "${query}" via bitmidi.com\n\n${lines.join("\n\n")}`;
+    log("MIDI_BITMIDI", `Found ${items.length} results`);
+    return body.length > 1900 ? body.slice(0, 1880) + "\n...(truncated)" : body;
+  } catch (err) {
+    log("MIDI_BITMIDI", `Failed: ${err.message}`);
+    return null;
+  }
+}
+
+async function searchMidiWorld(query, limit) {
+  try {
+    log("MIDI_MIDIWORLD", `Trying midiworld.com for "${query}"`);
+    const res = await axios.get("https://www.midiworld.com/search/", {
+      params: { q: query },
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "text/html" },
+      timeout: 10_000,
+    });
+    const html = res.data;
+    const dlMatches   = [...html.matchAll(/href="(https:\/\/www\.midiworld\.com\/download\/[^"]+)"/gi)];
+    const nameMatches = [...html.matchAll(/<a[^>]*href="https:\/\/www\.midiworld\.com\/download\/[^"]*"[^>]*>([^<]+)<\/a>/gi)];
+    if (!dlMatches.length) return null;
+    const items = dlMatches.slice(0, limit).map((m, i) => ({
+      downloadUrl: m[1],
+      name: nameMatches[i]?.[1]?.trim() ?? `result-${i+1}.mid`,
+    }));
+    const lines = items.map((it, i) => `${i+1}. ${it.name}\nDownload: ${it.downloadUrl}`);
+    const body = `${items.length} MIDI file(s) for "${query}" via midiworld.com\n\n${lines.join("\n\n")}`;
+    log("MIDI_MIDIWORLD", `Found ${items.length} results`);
+    return body.length > 1900 ? body.slice(0, 1880) + "\n...(truncated)" : body;
+  } catch (err) {
+    log("MIDI_MIDIWORLD", `Failed: ${err.message}`);
+    return null;
+  }
+}
+
+async function searchGitHub(query, limit) {
+  try {
+    log("MIDI_GITHUB", `Trying GitHub for "${query}"`);
     const headers = {
       "Accept": "application/vnd.github+json",
-      "User-Agent": "honk-bot-midi-search/1.0",
+      "User-Agent": "honk-bot-midi/1.0",
       "X-GitHub-Api-Version": "2022-11-28",
     };
-    // Add auth token if available — raises rate limit from 10/min to 30/min
-    if (process.env.GITHUB_TOKEN) {
-      headers["Authorization"] = `Bearer ${process.env.GITHUB_TOKEN}`;
-    }
-
-    const searchRes = await axios.get("https://api.github.com/search/code", {
-      params: { q: `${query} extension:mid`, per_page: limit * 2 },
+    if (process.env.GITHUB_TOKEN) headers["Authorization"] = `Bearer ${process.env.GITHUB_TOKEN}`;
+    const res = await axios.get("https://api.github.com/search/code", {
+      params: { q: `${query} extension:mid`, per_page: Math.min(limit * 2, 20) },
       headers,
       timeout: 10_000,
     });
-
-    const items = searchRes.data?.items ?? [];
-
-    if (items.length === 0) {
-      return res.send(`No MIDI files found for "${query}". Try a different search term.`);
-    }
-
-    // Build direct raw download URLs from GitHub
+    const items = res.data?.items ?? [];
+    if (!items.length) return null;
     const results = items.slice(0, limit).map((item, i) => {
-      // Convert HTML url to raw download URL
-      // html_url: https://github.com/user/repo/blob/main/file.mid
-      // raw_url:  https://raw.githubusercontent.com/user/repo/main/file.mid
-      const rawUrl = item.html_url
+      const downloadUrl = item.html_url
         .replace("https://github.com/", "https://raw.githubusercontent.com/")
         .replace("/blob/", "/");
-
-      const name = item.name; // e.g. "mario.mid"
-      const repo = item.repository?.full_name ?? "unknown";
-
-      return `${i+1}. ${name}
-Repo: ${repo}
-Download: ${rawUrl}`;
+      return `${i+1}. ${item.name}\nRepo: ${item.repository?.full_name ?? "unknown"}\nDownload: ${downloadUrl}`;
     });
-
-    const body = `${results.length} MIDI file(s) found for "${query}"\n\n${results.join("\n\n")}`;
-    log("MIDI", `Returning ${results.length} results for "${query}"`);
-    return res.send(body.length > 1900 ? body.slice(0, 1880) + "\n...(truncated)" : body);
-
+    const body = `${results.length} MIDI file(s) for "${query}" via GitHub\n\n${results.join("\n\n")}`;
+    log("MIDI_GITHUB", `Found ${results.length} results`);
+    return body.length > 1900 ? body.slice(0, 1880) + "\n...(truncated)" : body;
   } catch (err) {
     const limited = err.response?.status === 403 || err.response?.status === 429;
-    log("MIDI_ERROR", `FAILED: ${err.message}`);
-    return res.send(
-      limited
-        ? "GitHub rate limit hit. Set a GITHUB_TOKEN env var on Render to increase the limit, or try again in a minute."
-        : `MIDI search failed: ${err.message}`
-    );
+    log("MIDI_GITHUB", `Failed: ${err.message}`);
+    if (limited) return "GitHub rate limit hit. Add GITHUB_TOKEN env var on Render to fix.";
+    return null;
   }
-});
+}
 
 // 404
 app.use((req, res) => {
