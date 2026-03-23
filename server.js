@@ -94,41 +94,51 @@ function relTime(iso) {
 }
 
 function renderCard(level, index, total) {
-  const W=800,H=200,PAD=20,ORANGE="#f97316",NAVY="#0f172a",BORDER="#334155",TEXT="#f1f5f9",MUTED="#94a3b8",GOLD="#fbbf24";
+  const W=800,H=220,PAD=24;
+  const ORANGE="#f97316",NAVY="#0f172a",BORDER="#334155",TEXT="#f1f5f9",MUTED="#94a3b8",GOLD="#fbbf24";
   const ratio=Math.round((level.upvote_ratio??0)*100);
-  const barW=Math.round((W-PAD*2-204)*(level.upvote_ratio??0));
+  const barW=Math.round((W-PAD*2-220)*(level.upvote_ratio??0));
   const barColor=ratio>=95?ORANGE:ratio>=80?GOLD:"#86efac";
-  const flair=level.flair?esc(trunc(level.flair,28)):null;
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="'Courier New',monospace">
-  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${NAVY}"/><stop offset="100%" stop-color="#1a2540"/></linearGradient></defs>
-  <rect width="${W}" height="${H}" rx="6" fill="url(#bg)"/>
-  <rect x="0" y="0" width="4" height="${H}" fill="${ORANGE}"/>
-  <rect x="4" y="0" width="${W-4}" height="2" fill="${ORANGE}" opacity="0.5"/>
-  <rect x="${PAD+4}" y="${PAD+4}" width="36" height="22" rx="4" fill="${ORANGE}" opacity="0.15"/>
-  <rect x="${PAD+4}" y="${PAD+4}" width="36" height="22" rx="4" stroke="${ORANGE}" stroke-width="1" fill="none"/>
-  <text x="${PAD+22}" y="${PAD+19}" fill="${ORANGE}" font-size="11" font-weight="bold" text-anchor="middle">${index}/${total}</text>
-  <text x="${PAD+50}" y="${PAD+22}" fill="${TEXT}" font-size="15" font-weight="bold">${esc(trunc(level.title,72))}</text>
-  <text x="${PAD+50}" y="${PAD+44}" fill="${MUTED}" font-size="11"><tspan fill="${GOLD}" font-weight="bold">u/${esc(level.author)}</tspan><tspan>  ·  r/honk  ·  ${relTime(level.created_at)}</tspan></text>
-  ${flair?`<rect x="${PAD+50}" y="${PAD+52}" width="${flair.length*7+16}" height="16" rx="8" fill="${ORANGE}" opacity="0.18"/>
-  <rect x="${PAD+50}" y="${PAD+52}" width="${flair.length*7+16}" height="16" rx="8" stroke="${ORANGE}" stroke-width="0.75" fill="none"/>
-  <text x="${PAD+58+flair.length*3.5}" y="${PAD+63}" fill="${ORANGE}" font-size="9.5" text-anchor="middle" font-weight="bold">${flair}</text>`:""}
-  <line x1="${PAD+4}" y1="${H-62}" x2="${W-PAD-4}" y2="${H-62}" stroke="${BORDER}" stroke-width="1"/>
-  <text x="${PAD+4}" y="${H-42}" fill="${MUTED}" font-size="10">SCORE</text>
-  <text x="${PAD+4}" y="${H-26}" fill="${ORANGE}" font-size="15" font-weight="bold">${fmtNum(level.score)}</text>
-  <text x="${PAD+80}" y="${H-42}" fill="${MUTED}" font-size="10">COMMENTS</text>
-  <text x="${PAD+80}" y="${H-26}" fill="${TEXT}" font-size="15" font-weight="bold">${fmtNum(level.num_comments)}</text>
-  <text x="${PAD+200}" y="${H-42}" fill="${MUTED}" font-size="10">UPVOTE RATIO</text>
-  <text x="${PAD+200}" y="${H-26}" fill="${barColor}" font-size="15" font-weight="bold">${ratio}%</text>
-  <rect x="${PAD+200}" y="${H-18}" width="${W-PAD*2-204}" height="5" rx="2.5" fill="${BORDER}"/>
-  <rect x="${PAD+200}" y="${H-18}" width="${Math.max(barW,4)}" height="5" rx="2.5" fill="${barColor}" opacity="0.85"/>
-  <text x="${W-PAD-4}" y="${H-13}" fill="${ORANGE}" font-size="9.5" text-anchor="end" opacity="0.8">${esc(trunc(level.url,55))}</text>
+  const flair=level.flair&&level.flair!=="none"?esc(trunc(level.flair,28)):null;
+  const flairW=flair?Math.min(flair.length*8+24,200):0;
+  const title=esc(trunc(level.title,60));
+  const timeAgo=relTime(level.created_at);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${NAVY}"/><stop offset="100%" stop-color="#1a2540"/></linearGradient>
+    <linearGradient id="stripe" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${ORANGE}"/><stop offset="100%" stop-color="#fb923c"/></linearGradient>
+  </defs>
+  <rect width="${W}" height="${H}" rx="8" fill="url(#bg)"/>
+  <rect x="0" y="0" width="5" height="${H}" rx="3" fill="url(#stripe)"/>
+  <rect x="5" y="0" width="${W-5}" height="2" fill="${ORANGE}" opacity="0.4"/>
+  <rect x="${PAD+4}" y="${PAD}" width="44" height="24" rx="5" fill="${ORANGE}" opacity="0.15"/>
+  <rect x="${PAD+4}" y="${PAD}" width="44" height="24" rx="5" stroke="${ORANGE}" stroke-width="1.2" fill="none"/>
+  <text x="${PAD+26}" y="${PAD+16}" fill="${ORANGE}" font-size="11" font-weight="bold" text-anchor="middle">${index} / ${total}</text>
+  <rect x="${W-PAD-72}" y="${PAD}" width="68" height="24" rx="5" fill="#1e293b"/>
+  <rect x="${W-PAD-72}" y="${PAD}" width="68" height="24" rx="5" stroke="${BORDER}" stroke-width="1" fill="none"/>
+  <text x="${W-PAD-38}" y="${PAD+16}" fill="${MUTED}" font-size="11" text-anchor="middle">r/honk</text>
+  <text x="${PAD+58}" y="${PAD+18}" fill="${TEXT}" font-size="16" font-weight="bold">${title}</text>
+  <text x="${PAD+58}" y="${PAD+42}" font-size="12" fill="${MUTED}"><tspan fill="${GOLD}" font-weight="bold">u/${esc(level.author)}</tspan><tspan fill="${MUTED}">  ·  ${timeAgo}</tspan></text>
+  ${flair?`<rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" fill="${ORANGE}" opacity="0.15"/>
+  <rect x="${PAD+58}" y="${PAD+54}" width="${flairW}" height="18" rx="9" stroke="${ORANGE}" stroke-width="0.8" fill="none"/>
+  <text x="${PAD+58+flairW/2}" y="${PAD+67}" fill="${ORANGE}" font-size="10" font-weight="bold" text-anchor="middle">${flair}</text>`:""}
+  <line x1="${PAD}" y1="${H-72}" x2="${W-PAD}" y2="${H-72}" stroke="${BORDER}" stroke-width="1"/>
+  <text x="${PAD+8}" y="${H-50}" fill="${MUTED}" font-size="10" letter-spacing="1">SCORE</text>
+  <text x="${PAD+8}" y="${H-30}" fill="${ORANGE}" font-size="18" font-weight="bold">${fmtNum(level.score)}</text>
+  <text x="${PAD+90}" y="${H-50}" fill="${MUTED}" font-size="10" letter-spacing="1">COMMENTS</text>
+  <text x="${PAD+90}" y="${H-30}" fill="${TEXT}" font-size="18" font-weight="bold">${fmtNum(level.num_comments)}</text>
+  <text x="${PAD+220}" y="${H-50}" fill="${MUTED}" font-size="10" letter-spacing="1">UPVOTE RATIO</text>
+  <text x="${PAD+220}" y="${H-30}" fill="${barColor}" font-size="18" font-weight="bold">${ratio}%</text>
+  <rect x="${PAD+220}" y="${H-20}" width="${W-PAD*2-220}" height="6" rx="3" fill="${BORDER}"/>
+  <rect x="${PAD+220}" y="${H-20}" width="${Math.max(barW,6)}" height="6" rx="3" fill="${barColor}"/>
+  <text x="${W-PAD}" y="${H-8}" fill="${ORANGE}" font-size="10" text-anchor="end" opacity="0.7">${esc(trunc(level.url,55))}</text>
 </svg>`;
 }
 
 function svgToPng(svg) {
   log("RENDER", "Converting SVG → PNG");
   const start = Date.now();
-  const png = new Resvg(svg, { fitTo: { mode: "width", value: 1600 }, font: { loadSystemFonts: false } }).render().asPng();
+  const png = new Resvg(svg, { fitTo: { mode: "width", value: 1600 }, font: { loadSystemFonts: true } }).render().asPng();
   log("RENDER", `PNG done in ${Date.now()-start}ms — ${(png.length/1024).toFixed(1)}KB`);
   return png;
 }
