@@ -486,6 +486,239 @@ app.get("/title", async (req, res) => {
   }
 });
 
+
+// ─── Difficulty filter helper ─────────────────────────────────────────────────
+const DIFFICULTIES = [
+  "🍰 VERY EASY",
+  "🟢 EASY",
+  "🟡 MEDIUM",
+  "🔴 HARD",
+  "🔥 INSANE",
+  "💀🔥 NEAR IMPOSSIBLE",
+  "🔥💀🔥 IMPOSSIBLE",
+];
+
+function getDifficulty(req) {
+  const raw = (req.body?.difficulty ?? req.query?.difficulty ?? "").trim();
+  if (!raw) return null;
+  // case-insensitive match against known difficulties
+  const match = DIFFICULTIES.find(d => d.toLowerCase() === raw.toLowerCase());
+  return match ?? null;
+}
+
+function filterByDifficulty(posts, difficulty) {
+  if (!difficulty) return posts;
+  return posts.filter(p => {
+    const flair = (p.flair ?? "").toLowerCase().trim();
+    return flair === difficulty.toLowerCase().trim();
+  });
+}
+
+// ─── GET /user — posts by a specific reddit user ──────────────────────────────
+// GET /user?u=RecognitionPatient12&difficulty=🔴 HARD&sub=honk
+app.get("/user", async (req, res) => {
+  const username   = (req.body?.u ?? req.query?.u ?? req.query?.username ?? "").trim().replace(/^u\//i, "");
+  const difficulty = getDifficulty(req);
+  const subreddit  = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
+  const base       = getBase(req);
+  const start      = Date.now();
+
+  log("USER", `Fetching levels by u/${username} in r/${subreddit}${difficulty ? ` filtered by "${difficulty}"` : ""}`);
+
+  if (!username) {
+    return res.status(400).send("Missing ?u= param (reddit username)");
+  }
+
+  try {
+    // Search for posts by this author using Reddit's author: filter
+    const res2 = await redditClient.get(`/r/${subreddit}/search.json`, {
+      params: {
+        q:           `author:${username}`,
+        restrict_sr: 1,
+        sort:        "top",
+        type:        "link",
+        limit:       50,
+        t:           "all",
+      },
+    });
+
+    let posts = (res2.data?.data?.children ?? [])
+      .map(c => c.data)
+      .filter(p => !p.removed_by_category)
+      .map(normalisePost);
+
+    const total_before_filter = posts.length;
+    posts = filterByDifficulty(posts, difficulty).slice(0, 15);
+
+    log("USER", `Got ${total_before_filter} posts, ${posts.length} after filter in ${Date.now()-start}ms`);
+
+    if (posts.length === 0) {
+      const reason = difficulty
+        ? `No ${difficulty} levels found by u/${username} in r/${subreddit}.`
+        : `No levels found by u/${username} in r/${subreddit}.`;
+      return res.send(reason);
+    }
+
+    const results_page_url = `${base}/results?q=author:${encodeURIComponent(username)}&sub=${encodeURIComponent(subreddit)}`;
+
+    const lines = posts.map((l, i) => {
+      const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
+      return [
+        `${i+1}. ${l.title}${flair}`,
+        `Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
+        l.url,
+      ].join("
+");
+    });
+
+    return res.send([
+      `${posts.length} level(s) by u/${username} in r/${subreddit}${difficulty ? ` [${difficulty}]` : ""}`,
+      `Full results: ${results_page_url}`,
+      "---",
+      lines.join("
+
+"),
+    ].join("
+"));
+
+  } catch (err) {
+    const ms = Date.now() - start;
+    log("USER_ERROR", `FAILED after ${ms}ms: ${err.message}`);
+    return res.status(500).send(`Error fetching levels: ${err.message}`);
+  }
+});
+
+// ─── GET /top — top scoring posts ────────────────────────────────────────────
+// GET /top?timeframe=week&difficulty=🔥 INSANE&sub=honk
+// timeframe: day | week | month | all (default all)
+app.get("/top", async (req, res) => {
+  const rawTime    = (req.query.timeframe ?? req.body?.timeframe ?? "all").toLowerCase().trim();
+  const difficulty = getDifficulty(req);
+  const subreddit  = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
+  const base       = getBase(req);
+  const start      = Date.now();
+
+  // Normalise timeframe to Reddit's t= param
+  const timeMap = { today: "day", day: "day", week: "week", month: "month", year: "year", all: "all", "all time": "all" };
+  const t = timeMap[rawTime] ?? "all";
+  const timeLabel = { day:"Today", week:"This Week", month:"This Month", year:"This Year", all:"All Time" }[t];
+
+  log("TOP", `Fetching top posts in r/${subreddit} t=${t}${difficulty ? ` filtered by "${difficulty}"` : ""}`);
+
+  try {
+    const res2 = await redditClient.get(`/r/${subreddit}/top.json`, {
+      params: { t, limit: 50 },
+    });
+
+    let posts = (res2.data?.data?.children ?? [])
+      .map(c => c.data)
+      .filter(p => !p.removed_by_category)
+      .map(normalisePost);
+
+    const total_before_filter = posts.length;
+    posts = filterByDifficulty(posts, difficulty).slice(0, 15);
+
+    log("TOP", `Got ${total_before_filter} posts, ${posts.length} after filter in ${Date.now()-start}ms`);
+
+    if (posts.length === 0) {
+      const reason = difficulty
+        ? `No ${difficulty} levels in the top of r/${subreddit} for ${timeLabel}.`
+        : `No top levels found in r/${subreddit} for ${timeLabel}.`;
+      return res.send(reason);
+    }
+
+    const results_page_url = `${base}/results?q=*&sub=${encodeURIComponent(subreddit)}`;
+
+    const lines = posts.map((l, i) => {
+      const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
+      return [
+        `${i+1}. ${l.title}${flair}`,
+        `Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
+        `by u/${l.author}`,
+        l.url,
+      ].join("
+");
+    });
+
+    return res.send([
+      `Top ${posts.length} level(s) in r/${subreddit} — ${timeLabel}${difficulty ? ` [${difficulty}]` : ""}`,
+      `Full results: ${results_page_url}`,
+      "---",
+      lines.join("
+
+"),
+    ].join("
+"));
+
+  } catch (err) {
+    const ms = Date.now() - start;
+    log("TOP_ERROR", `FAILED after ${ms}ms: ${err.message}`);
+    return res.status(500).send(`Error fetching top levels: ${err.message}`);
+  }
+});
+
+// ─── GET /new — newest posts ──────────────────────────────────────────────────
+// GET /new?difficulty=🟡 MEDIUM&sub=honk
+app.get("/new", async (req, res) => {
+  const difficulty = getDifficulty(req);
+  const subreddit  = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
+  const base       = getBase(req);
+  const start      = Date.now();
+
+  log("NEW", `Fetching new posts in r/${subreddit}${difficulty ? ` filtered by "${difficulty}"` : ""}`);
+
+  try {
+    const res2 = await redditClient.get(`/r/${subreddit}/new.json`, {
+      params: { limit: 50 },
+    });
+
+    let posts = (res2.data?.data?.children ?? [])
+      .map(c => c.data)
+      .filter(p => !p.removed_by_category)
+      .map(normalisePost);
+
+    const total_before_filter = posts.length;
+    posts = filterByDifficulty(posts, difficulty).slice(0, 15);
+
+    log("NEW", `Got ${total_before_filter} posts, ${posts.length} after filter in ${Date.now()-start}ms`);
+
+    if (posts.length === 0) {
+      const reason = difficulty
+        ? `No new ${difficulty} levels found in r/${subreddit}.`
+        : `No new levels found in r/${subreddit}.`;
+      return res.send(reason);
+    }
+
+    const results_page_url = `${base}/results?q=*&sub=${encodeURIComponent(subreddit)}`;
+
+    const lines = posts.map((l, i) => {
+      const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
+      return [
+        `${i+1}. ${l.title}${flair}`,
+        `Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
+        `by u/${l.author}`,
+        l.url,
+      ].join("
+");
+    });
+
+    return res.send([
+      `${posts.length} newest level(s) in r/${subreddit}${difficulty ? ` [${difficulty}]` : ""}`,
+      `Full results: ${results_page_url}`,
+      "---",
+      lines.join("
+
+"),
+    ].join("
+"));
+
+  } catch (err) {
+    const ms = Date.now() - start;
+    log("NEW_ERROR", `FAILED after ${ms}ms: ${err.message}`);
+    return res.status(500).send(`Error fetching new levels: ${err.message}`);
+  }
+});
+
 // 404
 app.use((req, res) => {
   log("404", `${req.method} ${req.path}`);
@@ -503,4 +736,7 @@ app.listen(PORT, () => {
   log("STARTUP", "GET  /image?q=...&sub=...           PNG card for first result");
   log("STARTUP", "GET  /card/:id/png                  PNG card image");
   log("STARTUP", "GET  /card/:id/svg                  SVG card (debug)");
+  log("STARTUP", "GET  /user?u=...&difficulty=...     Levels by user");
+  log("STARTUP", "GET  /top?timeframe=...&difficulty=... Top levels");
+  log("STARTUP", "GET  /new?difficulty=...            Newest levels");
 });
