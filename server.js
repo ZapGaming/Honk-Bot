@@ -377,6 +377,80 @@ app.get("/card/:postId/svg", async (req, res) => {
   }
 });
 
+
+// ─── GET /midi?q=... — search GitHub for MIDI files ──────────────────────────
+// Uses GitHub code search API to find .mid files matching the query.
+// Returns plain text list with direct download URLs — BotGhost reads via {midi.response}
+// Optional: ?limit=5 (max 10)
+//
+// To avoid GitHub rate limits, set GITHUB_TOKEN env var on Render:
+//   Settings → Environment → GITHUB_TOKEN = your personal access token (free)
+app.get("/midi", async (req, res) => {
+  res.status(200);
+  res.setHeader("Content-Type", "text/plain");
+
+  const query = (req.query.q ?? req.query.query ?? "").trim();
+  const limit = Math.min(parseInt(req.query.limit) || 5, 10);
+
+  log("MIDI", `Searching for "${query}" limit ${limit}`);
+
+  if (!query) return res.send("Please provide a search query e.g. ?q=mario");
+
+  try {
+    const headers = {
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "honk-bot-midi-search/1.0",
+      "X-GitHub-Api-Version": "2022-11-28",
+    };
+    // Add auth token if available — raises rate limit from 10/min to 30/min
+    if (process.env.GITHUB_TOKEN) {
+      headers["Authorization"] = `Bearer ${process.env.GITHUB_TOKEN}`;
+    }
+
+    const searchRes = await axios.get("https://api.github.com/search/code", {
+      params: { q: `${query} extension:mid`, per_page: limit * 2 },
+      headers,
+      timeout: 10_000,
+    });
+
+    const items = searchRes.data?.items ?? [];
+
+    if (items.length === 0) {
+      return res.send(`No MIDI files found for "${query}". Try a different search term.`);
+    }
+
+    // Build direct raw download URLs from GitHub
+    const results = items.slice(0, limit).map((item, i) => {
+      // Convert HTML url to raw download URL
+      // html_url: https://github.com/user/repo/blob/main/file.mid
+      // raw_url:  https://raw.githubusercontent.com/user/repo/main/file.mid
+      const rawUrl = item.html_url
+        .replace("https://github.com/", "https://raw.githubusercontent.com/")
+        .replace("/blob/", "/");
+
+      const name = item.name; // e.g. "mario.mid"
+      const repo = item.repository?.full_name ?? "unknown";
+
+      return `${i+1}. ${name}
+Repo: ${repo}
+Download: ${rawUrl}`;
+    });
+
+    const body = `${results.length} MIDI file(s) found for "${query}"\n\n${results.join("\n\n")}`;
+    log("MIDI", `Returning ${results.length} results for "${query}"`);
+    return res.send(body.length > 1900 ? body.slice(0, 1880) + "\n...(truncated)" : body);
+
+  } catch (err) {
+    const limited = err.response?.status === 403 || err.response?.status === 429;
+    log("MIDI_ERROR", `FAILED: ${err.message}`);
+    return res.send(
+      limited
+        ? "GitHub rate limit hit. Set a GITHUB_TOKEN env var on Render to increase the limit, or try again in a minute."
+        : `MIDI search failed: ${err.message}`
+    );
+  }
+});
+
 // 404
 app.use((req, res) => {
   log("404", `${req.method} ${req.path}`);
@@ -393,4 +467,5 @@ app.listen(PORT, () => {
   log("STARTUP", "GET      /results?q=...&sub=... → HTML page");
   log("STARTUP", "GET      /card/:id/png          → PNG card");
   log("STARTUP", "GET      /card/:id/svg          → SVG debug");
+  log("STARTUP", "GET      /midi?q=...&limit=...   → MIDI file search → {midi.response}");
 });
