@@ -404,6 +404,54 @@ app.get("/card/:postId/svg", async (req, res) => {
   }
 });
 
+// ─── GET /image?q=... — returns the first result's PNG card directly ───────────
+// BotGhost Image URL field: https://honk-bot.onrender.com/image?q={option_query}
+app.get("/image", async (req, res) => {
+  const query = (req.query.q ?? req.query.query ?? "").trim();
+  log("IMAGE", `Fetching first result image for "${query}"`);
+  if (!query) return res.status(400).send("Missing ?q= param");
+  try {
+    const levels = await searchLevels(query, 1);
+    if (levels.length === 0) {
+      // Return a simple "no results" PNG card
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="220" font-family="sans-serif">
+        <rect width="800" height="220" rx="8" fill="#0f172a"/>
+        <rect x="0" y="0" width="5" height="220" fill="#f97316"/>
+        <text x="400" y="100" fill="#94a3b8" font-size="24" text-anchor="middle">🪿 No results found</text>
+        <text x="400" y="135" fill="#64748b" font-size="16" text-anchor="middle">Nothing in r/honk matching "${esc(query)}"</text>
+      </svg>`;
+      const png = svgToPng(svg);
+      res.setHeader("Content-Type", "image/png");
+      return res.end(png);
+    }
+    const png = svgToPng(renderCard(levels[0], 1, 1));
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.end(png);
+  } catch (err) {
+    log("IMAGE_ERROR", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /title?q=... — returns plain text title for first result ─────────────
+// Useful for embed title field if BotGhost ever supports URL-fetched text
+app.get("/title", async (req, res) => {
+  const query = (req.query.q ?? req.query.query ?? "").trim();
+  log("TITLE", `Fetching title for "${query}"`);
+  if (!query) return res.status(400).send("Missing ?q= param");
+  try {
+    const levels = await searchLevels(query, 1);
+    const text = levels.length > 0
+      ? `🪿 ${levels.length > 1 ? "15" : "1"} result(s) for "${query}" in r/honk`
+      : `🪿 No results for "${query}" in r/honk`;
+    res.setHeader("Content-Type", "text/plain");
+    return res.send(text);
+  } catch (err) {
+    res.status(500).send("Error");
+  }
+});
+
 // 404
 app.use((req, res) => {
   log("404", `${req.method} ${req.path}`);
