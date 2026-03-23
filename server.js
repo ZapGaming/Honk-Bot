@@ -649,64 +649,6 @@ app.get("/top", async (req, res) => {
   }
 });
 
-// ─── GET /new — newest posts ──────────────────────────────────────────────────
-// GET /new?difficulty=🟡 MEDIUM&sub=honk
-app.get("/new", async (req, res) => {
-  const difficulty = getDifficulty(req);
-  const subreddit  = (req.query.sub ?? req.query.subreddit ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
-  const base       = getBase(req);
-  const start      = Date.now();
-
-  log("NEW", `Fetching new posts in r/${subreddit}${difficulty ? ` filtered by "${difficulty}"` : ""}`);
-
-  try {
-    const res2 = await redditClient.get(`/r/${subreddit}/new.json`, {
-      params: { limit: 50 },
-    });
-
-    let posts = (res2.data?.data?.children ?? [])
-      .map(c => c.data)
-      .filter(p => !p.removed_by_category)
-      .map(normalisePost);
-
-    const total_before_filter = posts.length;
-    posts = filterByDifficulty(posts, difficulty).slice(0, 15);
-
-    log("NEW", `Got ${total_before_filter} posts, ${posts.length} after filter in ${Date.now()-start}ms`);
-
-    if (posts.length === 0) {
-      const reason = difficulty
-        ? `No new ${difficulty} levels found in r/${subreddit}.`
-        : `No new levels found in r/${subreddit}.`;
-      return res.send(reason);
-    }
-
-    const results_page_url = `${base}/results?q=*&sub=${encodeURIComponent(subreddit)}`;
-
-    const lines = posts.map((l, i) => {
-      const flair = l.flair && l.flair !== "none" ? ` [${l.flair}]` : "";
-      return [
-        `${i+1}. ${l.title}${flair}`,
-        `Score: ${fmtNum(l.score)} | Comments: ${fmtNum(l.num_comments)} | ${relTime(l.created_at)}`,
-        `by u/${l.author}`,
-        l.url,
-      ].join("\n");
-    });
-
-    return res.send([
-      `${posts.length} newest level(s) in r/${subreddit}${difficulty ? ` [${difficulty}]` : ""}`,
-      `Full results: ${results_page_url}`,
-      "---",
-      lines.join("\n\n"),
-    ].join("\n"));
-
-  } catch (err) {
-    const ms = Date.now() - start;
-    log("NEW_ERROR", `FAILED after ${ms}ms: ${err.message}`);
-    return res.status(500).send(`Error fetching new levels: ${err.message}`);
-  }
-});
-
 // 404
 app.use((req, res) => {
   log("404", `${req.method} ${req.path}`);
@@ -726,5 +668,4 @@ app.listen(PORT, () => {
   log("STARTUP", "GET  /card/:id/svg                  SVG card (debug)");
   log("STARTUP", "GET  /user?u=...&difficulty=...     Levels by user");
   log("STARTUP", "GET  /top?timeframe=...&difficulty=... Top levels");
-  log("STARTUP", "GET  /new?difficulty=...            Newest levels");
 });
