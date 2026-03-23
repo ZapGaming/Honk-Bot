@@ -499,6 +499,193 @@ async function searchGitHub(query, limit) {
   }
 }
 
+
+// ─── POST /ai — Honk AI Assistant ────────────────────────────────────────────
+// Powered by Aqua API (claude-opus-4-6) with web search + extract tools
+// BotGhost reads via {ai.response}
+// Env var required: AQUA_API_KEY
+//
+// BotGhost setup:
+//   POST /ai  body: { "message": "{option_question}" }
+
+const AQUA_BASE = "https://api.aquadevs.com";
+const HONK_SYSTEM = `You are Honky, a fun and chaotic goose assistant living inside a Discord server for r/honk — a Reddit community that plays a goose-themed level game. You are helpful, witty, and a little unhinged (you're a goose after all). You love honking, chaos, and helping people find cool stuff online.
+
+You have access to web search and can fetch any webpage. Use these freely when you need current information.
+
+Keep responses concise and Discord-friendly — under 1800 characters. Use emojis occasionally. Never be boring. If someone asks about r/honk levels, you know it's a Reddit-based community game with difficulty ratings from Very Easy to Impossible.
+
+HONK. 🪿`;
+
+async function aquaSearch(query) {
+  log("AI_SEARCH", `Searching: "${query}"`);
+  const res = await axios.post(`${AQUA_BASE}/v1/search`, {
+    query,
+    depth: "basic",
+  }, {
+    headers: {
+      "Authorization": `Bearer ${process.env.AQUA_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 15_000,
+  });
+  return res.data?.result?.results ?? [];
+}
+
+async function aquaExtract(url) {
+  log("AI_EXTRACT", `Extracting: ${url}`);
+  const res = await axios.post(`${AQUA_BASE}/v1/extract`, {
+    url,
+    engine: "quality",
+    format: "markdown",
+    return_type: "text",
+  }, {
+    headers: {
+      "Authorization": `Bearer ${process.env.AQUA_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    timeout: 20_000,
+  });
+  return res.data?.content ?? "";
+}
+
+// Tool definitions for claude-opus-4-6
+const AI_TOOLS = [
+  {
+    name: "web_search",
+    description: "Search the web for current information, news, facts, or anything you need to look up. Use this freely whenever you need up-to-date info.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The search query" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "web_extract",
+    description: "Fetch and read the full content of any webpage URL. Use this to get more detail from a search result or any specific page.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The URL to fetch" },
+      },
+      required: ["url"],
+    },
+  },
+];
+
+async function runAI(message) {
+  if (!process.env.AQUA_API_KEY) {
+    return "AI assistant not configured — AQUA_API_KEY missing on server.";
+  }
+
+  const messages = [{ role: "user", content: message }];
+  let finalText = "";
+  let iterations = 0;
+  const MAX_ITERATIONS = 5; // prevent infinite tool loops
+
+  while (iterations < MAX_ITERATIONS) {
+    iterations++;
+    log("AI", `Iteration ${iterations} — calling claude-opus-4-6`);
+
+    const res = await axios.post(`${AQUA_BASE}/v1/messages`, {
+      model: "claude-opus-4-6",
+      max_tokens: 1024,
+      system: HONK_SYSTEM,
+      tools: AI_TOOLS,
+      messages,
+    }, {
+      headers: {
+        "Authorization": `Bearer ${process.env.AQUA_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 30_000,
+    });
+
+    const data = res.data;
+    log("AI", `Stop reason: ${data.stop_reason}`);
+
+    // Add assistant response to message history
+    messages.push({ role: "assistant", content: data.content });
+
+    // If done, extract text and return
+    if (data.stop_reason === "end_turn") {
+      finalText = data.content
+        .filter(b => b.type === "text")
+        .map(b => b.text)
+        .join("\n")
+        .trim();
+      break;
+    }
+
+    // If tool use, run the tools and feed results back
+    if (data.stop_reason === "tool_use") {
+      const toolUseBlocks = data.content.filter(b => b.type === "tool_use");
+      const toolResults = [];
+
+      for (const tool of toolUseBlocks) {
+        log("AI_TOOL", `Using tool: ${tool.name}`, tool.input);
+        let toolResult = "";
+
+        try {
+          if (tool.name === "web_search") {
+            const results = await aquaSearch(tool.input.query);
+            toolResult = results.length === 0
+              ? "No results found."
+              : results.map((r, i) => `${i+1}. ${r.title}\n${r.url}\n${r.content ?? ""}`).join("\n\n");
+          } else if (tool.name === "web_extract") {
+            const content = await aquaExtract(tool.input.url);
+            toolResult = content ? content.slice(0, 3000) : "Could not extract content from that URL.";
+          } else {
+            toolResult = `Unknown tool: ${tool.name}`;
+          }
+        } catch (err) {
+          toolResult = `Tool error: ${err.message}`;
+          log("AI_TOOL_ERROR", `${tool.name} failed: ${err.message}`);
+        }
+
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: tool.id,
+          content: toolResult,
+        });
+      }
+
+      // Feed tool results back
+      messages.push({ role: "user", content: toolResults });
+    }
+  }
+
+  if (!finalText) finalText = "Honk... I got confused. Try asking again! 🪿";
+
+  // Hard cap for Discord
+  return finalText.length > 1900 ? finalText.slice(0, 1880) + "\n...(honk)" : finalText;
+}
+
+app.post("/ai", async (req, res) => {
+  res.status(200);
+  res.setHeader("Content-Type", "text/plain");
+
+  const message = (req.body?.message ?? req.body?.question ?? req.query?.message ?? "").trim();
+  log("AI", `Message: "${message}"`);
+
+  if (!message || /^\{.*\}$/.test(message)) {
+    return res.send("Ask me anything! 🪿 e.g. /honk_ai What is the hardest level in r/honk?");
+  }
+
+  try {
+    const reply = await runAI(message);
+    log("AI", `Reply length: ${reply.length} chars`);
+    return res.send(reply);
+  } catch (err) {
+    log("AI_ERROR", `FAILED: ${err.message}`);
+    if (err.response?.status === 401) return res.send("Invalid Aqua API key — check AQUA_API_KEY on Render.");
+    if (err.response?.status === 429) return res.send("AI rate limited — try again in a moment! 🪿");
+    return res.send(`Honk... something went wrong: ${err.message}`);
+  }
+});
+
 // 404
 app.use((req, res) => {
   log("404", `${req.method} ${req.path}`);
@@ -516,4 +703,5 @@ app.listen(PORT, () => {
   log("STARTUP", "GET      /card/:id/png          → PNG card");
   log("STARTUP", "GET      /card/:id/svg          → SVG debug");
   log("STARTUP", "GET      /midi?q=...&limit=...   → MIDI file search → {midi.response}");
+  log("STARTUP", "POST     /ai  { message }          → AI assistant → {ai.response}");
 });
