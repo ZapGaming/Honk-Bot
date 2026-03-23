@@ -67,20 +67,10 @@ const DIFFICULTIES = [
 function getQuery(req) {
   return (req.body?.query ?? req.body?.q ?? req.query?.q ?? req.query?.query ?? "").trim();
 }
-function getSubreddit(req) {
-  const raw = (req.body?.subreddit ?? req.query?.subreddit ?? req.body?.sub ?? req.query?.sub ?? "honk").trim();
-  return raw.replace(/^r\//i, "").replace(/[^a-zA-Z0-9_]/g, "") || "honk";
-}
-function getLimit(req) {
-  const raw = parseInt(req.body?.limit ?? req.query?.limit);
-  if (!raw || isNaN(raw)) return 5;
-  return Math.min(Math.max(raw, 1), 15);
-}
-function getDifficulty(req) {
-  const raw = (req.body?.difficulty ?? req.query?.difficulty ?? "").trim();
-  if (!raw) return null;
-  return DIFFICULTIES.find(d => d.toLowerCase() === raw.toLowerCase()) ?? null;
-}
+// Subreddit, limit, difficulty hardcoded — BotGhost optional params break response format
+function getSubreddit() { return "honk"; }
+function getLimit()     { return 5; }
+function getDifficulty(){ return null; }
 function getBase(req) {
   return process.env.BASE_URL ?? `https://${req.get("host")}`;
 }
@@ -295,9 +285,9 @@ async function handleSearch(req, res) {
   let query, subreddit, difficulty, limit, base;
   try {
     query      = getQuery(req);
-    subreddit  = getSubreddit(req);
-    difficulty = getDifficulty(req);
-    limit      = getLimit(req);
+    subreddit  = getSubreddit();
+    difficulty = getDifficulty();
+    limit      = getLimit();
     base       = getBase(req);
   } catch(e) {
     return res.send("Error reading request params: " + e.message);
@@ -358,7 +348,7 @@ app.get("/image", async (req, res) => {
 // GET /card/:postId/png
 app.get("/card/:postId/png", async (req, res) => {
   const { postId } = req.params;
-  const subreddit  = getSubreddit(req);
+  const subreddit  = getSubreddit();
   const index = parseInt(req.query.index) || 1;
   const total = parseInt(req.query.total) || 1;
   try {
@@ -375,7 +365,7 @@ app.get("/card/:postId/png", async (req, res) => {
 // GET /card/:postId/svg
 app.get("/card/:postId/svg", async (req, res) => {
   const { postId } = req.params;
-  const subreddit  = getSubreddit(req);
+  const subreddit  = getSubreddit();
   const index = parseInt(req.query.index) || 1;
   const total = parseInt(req.query.total) || 1;
   try {
