@@ -198,26 +198,29 @@ function renderCard(level, index, total) {
   <text x="${W-PAD}" y="${H-8}" fill="${ORANGE}" font-size="10" text-anchor="end" opacity="0.7">${esc(trunc(level.url,55))}</text>
 </svg>`;
 }
-// Load Noto Emoji font once at startup for emoji support in SVG cards
+// Load Noto Emoji font for emoji support in SVG rendering
 import { readFileSync as _readFileSync } from "fs";
 import { fileURLToPath as _fileURLToPath } from "url";
 import { dirname as _dirname, join as _join } from "path";
 const _dir = _dirname(_fileURLToPath(import.meta.url));
+const _fontPath = _join(_dir, "NotoEmoji.ttf");
 let _emojiFont = null;
 try {
-  _emojiFont = _readFileSync(_join(_dir, "NotoEmoji.ttf"));
-  log("STARTUP", "NotoEmoji.ttf loaded for emoji rendering");
-} catch {
-  log("STARTUP", "NotoEmoji.ttf not found — emoji may not render in cards");
+  _emojiFont = _readFileSync(_fontPath);
+  log("FONT", `NotoEmoji.ttf loaded from ${_fontPath} (${(_emojiFont.length/1024).toFixed(0)}KB)`);
+} catch (e) {
+  log("FONT_ERROR", `NotoEmoji.ttf not found at ${_fontPath}: ${e.message}`);
 }
 
 function svgToPng(svg) {
   const start = Date.now();
   const opts = {
     fitTo: { mode: "width", value: 1600 },
-    font: { loadSystemFonts: true },
+    font: {
+      loadSystemFonts: true,
+      fontFiles: [_fontPath],
+    },
   };
-  if (_emojiFont) opts.font.fontBuffers = [_emojiFont];
   const png = new Resvg(svg, opts).render().asPng();
   log("RENDER", `PNG done in ${Date.now()-start}ms — ${(png.length/1024).toFixed(1)}KB`);
   return png;
