@@ -500,191 +500,186 @@ async function searchGitHub(query, limit) {
 }
 
 
-// ─── POST /ai — Honk AI Assistant ────────────────────────────────────────────
-// Powered by Aqua API (claude-opus-4-6) with web search + extract tools
-// BotGhost reads via {ai.response}
-// Env var required: AQUA_API_KEY
-//
-// BotGhost setup:
-//   POST /ai  body: { "message": "{option_question}" }
 
-const AQUA_BASE = "https://api.aquadevs.com";
-const HONK_SYSTEM = `You are Honky, a fun and chaotic goose assistant living inside a Discord server for r/honk — a Reddit community that plays a goose-themed level game. You are helpful, witty, and a little unhinged (you're a goose after all). You love honking, chaos, and helping people find cool stuff online.
-
-You have access to web search and can fetch any webpage. Use these freely when you need current information.
-
-Keep responses concise and Discord-friendly — under 1800 characters. Use emojis occasionally. Never be boring. If someone asks about r/honk levels, you know it's a Reddit-based community game with difficulty ratings from Very Easy to Impossible.
-
-HONK. 🪿`;
-
-async function aquaSearch(query) {
-  log("AI_SEARCH", `Searching: "${query}"`);
-  const res = await axios.post(`${AQUA_BASE}/v1/search`, {
-    query,
-    depth: "basic",
-  }, {
-    headers: {
-      "Authorization": `Bearer ${process.env.AQUA_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    timeout: 15_000,
-  });
-  return res.data?.result?.results ?? [];
-}
-
-async function aquaExtract(url) {
-  log("AI_EXTRACT", `Extracting: ${url}`);
-  const res = await axios.post(`${AQUA_BASE}/v1/extract`, {
-    url,
-    engine: "quality",
-    format: "markdown",
-    return_type: "text",
-  }, {
-    headers: {
-      "Authorization": `Bearer ${process.env.AQUA_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    timeout: 20_000,
-  });
-  return res.data?.content ?? "";
-}
-
-// Tool definitions for claude-opus-4-6
-const AI_TOOLS = [
-  {
-    name: "web_search",
-    description: "Search the web for current information, news, facts, or anything you need to look up. Use this freely whenever you need up-to-date info.",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "The search query" },
-      },
-      required: ["query"],
-    },
-  },
-  {
-    name: "web_extract",
-    description: "Fetch and read the full content of any webpage URL. Use this to get more detail from a search result or any specific page.",
-    input_schema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "The URL to fetch" },
-      },
-      required: ["url"],
-    },
-  },
-];
-
-async function runAI(message) {
-  if (!process.env.AQUA_API_KEY) {
-    return "AI assistant not configured — AQUA_API_KEY missing on server.";
-  }
-
-  const messages = [{ role: "user", content: message }];
-  let finalText = "";
-  let iterations = 0;
-  const MAX_ITERATIONS = 5; // prevent infinite tool loops
-
-  while (iterations < MAX_ITERATIONS) {
-    iterations++;
-    log("AI", `Iteration ${iterations} — calling claude-opus-4-6`);
-
-    const res = await axios.post(`${AQUA_BASE}/v1/messages`, {
-      model: "claude-opus-4-6",
-      max_tokens: 1024,
-      system: HONK_SYSTEM,
-      tools: AI_TOOLS,
-      messages,
-    }, {
-      headers: {
-        "Authorization": `Bearer ${process.env.AQUA_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 30_000,
-    });
-
-    const data = res.data;
-    log("AI", `Stop reason: ${data.stop_reason}`);
-
-    // Add assistant response to message history
-    messages.push({ role: "assistant", content: data.content });
-
-    // If done, extract text and return
-    if (data.stop_reason === "end_turn") {
-      finalText = data.content
-        .filter(b => b.type === "text")
-        .map(b => b.text)
-        .join("\n")
-        .trim();
-      break;
-    }
-
-    // If tool use, run the tools and feed results back
-    if (data.stop_reason === "tool_use") {
-      const toolUseBlocks = data.content.filter(b => b.type === "tool_use");
-      const toolResults = [];
-
-      for (const tool of toolUseBlocks) {
-        log("AI_TOOL", `Using tool: ${tool.name}`, tool.input);
-        let toolResult = "";
-
-        try {
-          if (tool.name === "web_search") {
-            const results = await aquaSearch(tool.input.query);
-            toolResult = results.length === 0
-              ? "No results found."
-              : results.map((r, i) => `${i+1}. ${r.title}\n${r.url}\n${r.content ?? ""}`).join("\n\n");
-          } else if (tool.name === "web_extract") {
-            const content = await aquaExtract(tool.input.url);
-            toolResult = content ? content.slice(0, 3000) : "Could not extract content from that URL.";
-          } else {
-            toolResult = `Unknown tool: ${tool.name}`;
-          }
-        } catch (err) {
-          toolResult = `Tool error: ${err.message}`;
-          log("AI_TOOL_ERROR", `${tool.name} failed: ${err.message}`);
-        }
-
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: tool.id,
-          content: toolResult,
-        });
-      }
-
-      // Feed tool results back
-      messages.push({ role: "user", content: toolResults });
-    }
-  }
-
-  if (!finalText) finalText = "Honk... I got confused. Try asking again! 🪿";
-
-  // Hard cap for Discord
-  return finalText.length > 1900 ? finalText.slice(0, 1880) + "\n...(honk)" : finalText;
-}
-
-app.post("/ai", async (req, res) => {
+// ─── GET /devstats?u=username — Developer stat card ──────────────────────────
+// Fetches all posts by a user in r/honk, calculates stats, renders a PNG card
+// BotGhost reads via {devstats.response} for text, image served at /devstats/png?u=...
+app.get("/devstats", async (req, res) => {
   res.status(200);
   res.setHeader("Content-Type", "text/plain");
-
-  const message = (req.body?.message ?? req.body?.question ?? req.query?.message ?? "").trim();
-  log("AI", `Message: "${message}"`);
-
-  if (!message || /^\{.*\}$/.test(message)) {
-    return res.send("Ask me anything! 🪿 e.g. /honk_ai What is the hardest level in r/honk?");
-  }
-
+  const username  = (req.query.u ?? req.query.username ?? "").trim().replace(/^u\//i, "");
+  const subreddit = (req.query.sub ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
+  const base      = getBase(req);
+  if (!username) return res.send("Please provide a username e.g. ?u=RecognitionPatient12");
   try {
-    const reply = await runAI(message);
-    log("AI", `Reply length: ${reply.length} chars`);
-    return res.send(reply);
+    const stats = await fetchDevStats(username, subreddit);
+    if (stats.totalLevels === 0) return res.send(`No levels found for u/${username} in r/${subreddit}.`);
+    const cardUrl = `${base}/devstats/png?u=${encodeURIComponent(username)}&sub=${encodeURIComponent(subreddit)}`;
+    return res.send([
+      `u/${username} — r/${subreddit} Dev Stats`,
+      `Levels: ${stats.totalLevels} | Total Score: ${fmtNum(stats.totalScore)} | Avg Score: ${fmtNum(Math.round(stats.avgScore))}`,
+      `Comments: ${fmtNum(stats.totalComments)} | Avg Ratio: ${stats.avgRatio}%`,
+      `Best Level: ${trunc(stats.bestLevel.title, 50)} (⬆${stats.bestLevel.score})`,
+      `Active since ${stats.activeSince} · Last post ${stats.latestPost}`,
+      `Card: ${cardUrl}`,
+    ].join("\n"));
   } catch (err) {
-    log("AI_ERROR", `FAILED: ${err.message}`);
-    if (err.response?.status === 401) return res.send("Invalid Aqua API key — check AQUA_API_KEY on Render.");
-    if (err.response?.status === 429) return res.send("AI rate limited — try again in a moment! 🪿");
-    return res.send(`Honk... something went wrong: ${err.message}`);
+    log("DEVSTATS_ERROR", err.message);
+    return res.send(`Error fetching stats: ${err.message}`);
   }
 });
+
+// GET /devstats/png?u=username — renders the full stat card as PNG
+app.get("/devstats/png", async (req, res) => {
+  const username  = (req.query.u ?? req.query.username ?? "").trim().replace(/^u\//i, "");
+  const subreddit = (req.query.sub ?? "honk").trim().replace(/^r\//i,"").replace(/[^a-zA-Z0-9_]/g,"") || "honk";
+  log("DEVSTATS_PNG", `Rendering card for u/${username} in r/${subreddit}`);
+  if (!username) return res.status(400).json({ error: "Missing ?u= param" });
+  try {
+    const stats = await fetchDevStats(username, subreddit);
+    const svg   = renderDevStatsCard(stats, subreddit);
+    const png   = svgToPng(svg);
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.end(png);
+  } catch (err) {
+    log("DEVSTATS_PNG_ERROR", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Fetch and calculate all dev stats ────────────────────────────────────────
+async function fetchDevStats(username, subreddit = "honk") {
+  log("DEVSTATS", `Fetching stats for u/${username} in r/${subreddit}`);
+  const start = Date.now();
+
+  const res = await redditClient.get(`/r/${subreddit}/search.json`, {
+    params: { q: `author:${username}`, restrict_sr: 1, sort: "top", type: "link", limit: 100, t: "all" },
+  });
+
+  const posts = (res.data?.data?.children ?? [])
+    .map(c => c.data)
+    .filter(p => !p.removed_by_category)
+    .map(normalisePost);
+
+  log("DEVSTATS", `Got ${posts.length} posts in ${Date.now()-start}ms`);
+
+  if (posts.length === 0) return { totalLevels: 0 };
+
+  const totalScore    = posts.reduce((s, p) => s + p.score, 0);
+  const totalComments = posts.reduce((s, p) => s + p.num_comments, 0);
+  const avgScore      = totalScore / posts.length;
+  const avgRatio      = Math.round(posts.reduce((s, p) => s + (p.upvote_ratio ?? 0), 0) / posts.length * 100);
+  const bestLevel     = posts.reduce((b, p) => p.score > b.score ? p : b, posts[0]);
+
+  // Sort by date to get first and latest
+  const sorted    = [...posts].sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+  const activeSince = new Date(sorted[0].created_at).toLocaleDateString("en-US", { month:"short", year:"numeric" });
+  const latestPost  = relTime(sorted[sorted.length-1].created_at);
+
+  // Top 3 by score
+  const top3 = [...posts].sort((a,b) => b.score - a.score).slice(0, 3);
+
+  // Difficulty breakdown
+  const diffMap = {};
+  for (const p of posts) {
+    const f = p.flair ?? "None";
+    diffMap[f] = (diffMap[f] ?? 0) + 1;
+  }
+  const diffBreakdown = Object.entries(diffMap)
+    .sort((a,b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([label, count]) => {
+      const colors = {
+        "🍰 VERY EASY":"#86efac","🟢 EASY":"#4ade80","🟡 MEDIUM":"#fbbf24",
+        "🔴 HARD":"#f97316","🔥 INSANE":"#ef4444",
+        "💀🔥 NEAR IMPOSSIBLE":"#a855f7","🔥💀🔥 IMPOSSIBLE":"#ec4899",
+      };
+      return { label: label.slice(0, 8), full: label, count, color: colors[label] ?? "#94a3b8" };
+    });
+
+  const topDifficulty = diffBreakdown[0]?.full ?? "None";
+
+  return {
+    username, subreddit, totalLevels: posts.length,
+    totalScore, avgScore, totalComments, avgRatio,
+    bestLevel, activeSince, latestPost, top3, diffBreakdown, topDifficulty,
+  };
+}
+
+// ── Render the stat card SVG ──────────────────────────────────────────────────
+function renderDevStatsCard(stats, subreddit = "honk") {
+  const W=1000, H=420, PAD=32;
+  const ORANGE="#f97316", NAVY="#0f172a", BG2="#1e293b", BORDER="#334155";
+  const TEXT="#f1f5f9", MUTED="#94a3b8", GOLD="#fbbf24", GREEN="#86efac";
+
+  function statBox(x, y, w, h, label, value, sub, accent) {
+    return `
+  <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${BG2}"/>
+  <rect x="${x}" y="${y}" width="3" height="${h}" rx="1.5" fill="${accent}"/>
+  <text x="${x+16}" y="${y+22}" fill="${MUTED}" font-size="10" letter-spacing="1">${esc(label)}</text>
+  <text x="${x+16}" y="${y+50}" fill="${TEXT}" font-size="22" font-weight="bold">${esc(String(value))}</text>
+  ${sub ? `<text x="${x+16}" y="${y+68}" fill="${MUTED}" font-size="10">${esc(sub)}</text>` : ""}`;
+  }
+
+  const top3SVG = stats.top3.map((l, i) => {
+    const y = PAD + 248 + i * 30;
+    const medals = ["🥇","🥈","🥉"];
+    const barW = Math.round((l.score / Math.max(stats.top3[0].score, 1)) * 420);
+    return `
+  <rect x="${PAD+8}" y="${y-16}" width="430" height="24" rx="4" fill="${BG2}" opacity="0.6"/>
+  <rect x="${PAD+8}" y="${y-16}" width="${Math.max(barW,4)}" height="24" rx="4" fill="${ORANGE}" opacity="0.2"/>
+  <text x="${PAD+16}" y="${y+3}" fill="${TEXT}" font-size="12">${medals[i]} ${esc(trunc(l.title, 42))}</text>
+  <text x="${PAD+446}" y="${y+3}" fill="${GOLD}" font-size="12" font-weight="bold" text-anchor="end">⬆ ${fmtNum(l.score)}</text>`;
+  }).join("");
+
+  const maxDiffCount = Math.max(...stats.diffBreakdown.map(d => d.count), 1);
+  const diffSVG = stats.diffBreakdown.map((d, i) => {
+    const x  = PAD + 530 + i * 90;
+    const y  = PAD + 248;
+    const bH = Math.max(Math.round((d.count / maxDiffCount) * 60), 4);
+    return `
+  <rect x="${x}" y="${y+(60-bH)}" width="64" height="${bH}" rx="4" fill="${d.color}" opacity="0.85"/>
+  <text x="${x+32}" y="${y+76}" fill="${MUTED}" font-size="9" text-anchor="middle">${esc(d.label)}</text>
+  <text x="${x+32}" y="${y+90}" fill="${TEXT}" font-size="12" font-weight="bold" text-anchor="middle">${d.count}</text>`;
+  }).join("");
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${NAVY}"/><stop offset="100%" stop-color="#1a2540"/></linearGradient>
+    <linearGradient id="stripe" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${ORANGE}"/><stop offset="100%" stop-color="#fb923c"/></linearGradient>
+  </defs>
+  <rect width="${W}" height="${H}" rx="10" fill="url(#bg)"/>
+  <rect x="0" y="0" width="6" height="${H}" rx="3" fill="url(#stripe)"/>
+  <rect x="6" y="0" width="${W-6}" height="3" fill="${ORANGE}" opacity="0.4"/>
+
+  <text x="${PAD+8}" y="${PAD+22}" fill="${ORANGE}" font-size="11" letter-spacing="2">r/${esc(subreddit)}</text>
+  <text x="${PAD+8}" y="${PAD+56}" fill="${TEXT}" font-size="26" font-weight="bold">🪿 u/${esc(stats.username)}</text>
+  <text x="${PAD+8}" y="${PAD+78}" fill="${MUTED}" font-size="12">Active since ${esc(stats.activeSince)}  ·  Last post ${esc(stats.latestPost)}  ·  ${stats.totalLevels} levels  ·  ${esc(stats.topDifficulty)}</text>
+
+  <line x1="${PAD}" y1="${PAD+96}" x2="${W-PAD}" y2="${PAD+96}" stroke="${BORDER}" stroke-width="1"/>
+
+  ${statBox(PAD,     PAD+110, 172, 82, "TOTAL SCORE",    fmtNum(stats.totalScore),                  "combined upvotes",  ORANGE)}
+  ${statBox(PAD+188, PAD+110, 172, 82, "AVG SCORE",      fmtNum(Math.round(stats.avgScore)),        "per level",         GOLD)}
+  ${statBox(PAD+376, PAD+110, 172, 82, "TOTAL LEVELS",   stats.totalLevels,                         "posts on r/honk",   GREEN)}
+  ${statBox(PAD+564, PAD+110, 172, 82, "TOTAL COMMENTS", fmtNum(stats.totalComments),               "received",          "#a78bfa")}
+  ${statBox(PAD+752, PAD+110, 172, 82, "AVG RATIO",      stats.avgRatio+"%",                        "upvote ratio",      "#f472b6")}
+
+  <line x1="${PAD}" y1="${PAD+206}" x2="${W-PAD}" y2="${PAD+206}" stroke="${BORDER}" stroke-width="1" opacity="0.5"/>
+
+  <text x="${PAD+8}"   y="${PAD+228}" fill="${MUTED}" font-size="10" letter-spacing="1">TOP LEVELS</text>
+  ${top3SVG}
+
+  <text x="${PAD+530}" y="${PAD+228}" fill="${MUTED}" font-size="10" letter-spacing="1">DIFFICULTY BREAKDOWN</text>
+  ${diffSVG}
+
+  <rect x="${W-PAD-230}" y="${PAD+8}" width="230" height="52" rx="8" fill="${BG2}"/>
+  <rect x="${W-PAD-230}" y="${PAD+8}" width="3"   height="52" rx="1.5" fill="${GOLD}"/>
+  <text x="${W-PAD-220}" y="${PAD+26}" fill="${MUTED}" font-size="10" letter-spacing="1">BEST LEVEL</text>
+  <text x="${W-PAD-220}" y="${PAD+44}" fill="${GOLD}" font-size="13" font-weight="bold">${esc(trunc(stats.bestLevel.title, 22))}</text>
+  <text x="${W-PAD-8}"   y="${PAD+44}" fill="${ORANGE}" font-size="13" font-weight="bold" text-anchor="end">⬆ ${fmtNum(stats.bestLevel.score)}</text>
+</svg>`;
+}
 
 // 404
 app.use((req, res) => {
@@ -703,5 +698,6 @@ app.listen(PORT, () => {
   log("STARTUP", "GET      /card/:id/png          → PNG card");
   log("STARTUP", "GET      /card/:id/svg          → SVG debug");
   log("STARTUP", "GET      /midi?q=...&limit=...   → MIDI file search → {midi.response}");
-  log("STARTUP", "POST     /ai  { message }          → AI assistant → {ai.response}");
+  log("STARTUP", "GET      /devstats?u=...&sub=...   → Dev stats text → {devstats.response}");
+  log("STARTUP", "GET      /devstats/png?u=...        → Dev stats PNG card");
 });
