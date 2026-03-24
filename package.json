@@ -1,20 +1,17 @@
 {
-  "name": "botghost-ai-proxy",
-  "version": "1.0.0",
-  "description": "Dynamic AI API Proxy with Web Search and MongoDB for BotGhost",
-  "main": "server.js",
+  "name": "honk-render-server",
+  "version": "3.0.0",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "axios": "^1.6.8",
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "mongoose": "^8.3.2"
+    "@resvg/resvg-js": "^2.6.2",
+    "axios": "^1.7.0",
+    "cheerio": "^1.0.0",
+    "express": "^4.19.0"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "author": "",
-  "license": "ISC"
+  }
 }
